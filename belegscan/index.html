@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Belegscan</title>
+
+  <!-- React 18 -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- Babel für JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Tesseract.js – OCR komplett im Browser, kein API Key nötig -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Source+Sans+3:wght@300;400;500;600&display=swap" rel="stylesheet" />
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { min-height: 100vh; }
+    body { background: #faf8f2; font-family: 'Source Sans 3', system-ui, sans-serif; }
+    select, input, textarea, button { font-family: inherit; }
+
+    @keyframes spin  { to { transform: rotate(360deg); } }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.5; } }
+    .spinner { width:16px; height:16px; border:2.5px solid rgba(255,255,255,.3); border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; display:inline-block; flex-shrink:0; }
+
+    .progress-bar-wrap { background:rgba(255,255,255,.2); border-radius:10px; height:6px; width:100%; margin-top:6px; overflow:hidden; }
+    .progress-bar-fill { height:100%; background:#f0b535; border-radius:10px; transition:width .3s ease; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useRef } = React;
+
+/* ── TOKENS ─────────────────────────────────── */
+const C = {
+  navy:"#152741", navyMid:"#1d3a5e", navyLight:"#284f80",
+  amber:"#c4780c", amberBri:"#e8920a", gold:"#f0b535",
+  cream:"#faf8f2", paper:"#f3f0e8", white:"#ffffff",
+  border:"#d9d2c2", borderFocus:"#2a4f80",
+  muted:"#7a7060", textSub:"#4a4232", text:"#1a1510",
+  danger:"#b03020", success:"#2a5e3a",
+};
+const FD = "'Playfair Display', Georgia, serif";
+const FB = "'Source Sans 3', system-ui, sans-serif";
+const SK = "belege-v7";
+
+const DEFAULTS = {
+  firmen:        ["Planungsbüro Giessen GmbH","Architekturbüro Meier & Partner","Bauservice Müller GmbH","King Capital Holding UG"],
+  orte:          ["Frankfurt a.M., Kaiserstraße 12","Gießen, Seltersweg 42","Wölfersheim, Hauptstr. 1","München, Maximilianstraße 8"],
+  anlaesse:      ["Kundengespräch – Projektvorstellung","Akquisegespräch – Neukunde","Projektbesprechung LP 3/4","Abschluss Leistungsphase","Teammeeting"],
+  personen:      ["Max Mustermann, Geschäftsführer","Anna Schmidt, Projektleiterin","Dr. Klaus Meyer, Auftraggeber","Sarah Müller, Architektin"],
+  einkaufszwecke:["Kraftstoff / Fahrzeugkosten","Büromaterial","Baumaterial – Projekt","Werkzeug & Geräte","Betriebsbedarf","Fachliteratur"],
+  belegVon:      ["HESSOL Tankstelle","OBI Baumarkt","Bauhaus","Amazon Business","Büroland","Staples"],
+  signOrte:      ["Wölfersheim","Frankfurt am Main","Gießen","Berlin","München"],
+};
+
+const loadS  = () => { try { const r = localStorage.getItem(SK); return r ? {...DEFAULTS,...JSON.parse(r)} : DEFAULTS; } catch { return DEFAULTS; } };
+const saveS  = (s) => { try { localStorage.setItem(SK, JSON.stringify(s)); } catch {} };
+const today  = () => new Date().toLocaleDateString("de-DE",{day:"2-digit",month:"2-digit",year:"numeric"});
+const fmtNum = (v) => { if(!v&&v!==0)return"0,00"; const n=typeof v==="number"?v:parseFloat(String(v).replace(",",".")); return isNaN(n)?"0,00":n.toFixed(2).replace(".",","); };
+const parseAmt = (v) => { const n=parseFloat(String(v||"0").replace(",",".")); return isNaN(n)?0:n; };
+
+/* ── OCR + PARSING (Tesseract.js) ────────────── */
+const parseOCR = (raw) => {
+  const text = raw.replace(/\|/g,"I");            // OCR-Artefakte bereinigen
+
+  // ── Händlername: erste sinnvolle Zeile ───────
+  const lines = text.split(/[\n\r]+/).map(l=>l.trim()).filter(l=>l.length>2);
+  let belegVon = lines[0] || null;
+  // Sehr kurze Zeilen oder reine Sonderzeichen überspringen
+  for(const l of lines){
+    if(/[a-zA-ZäöüÄÖÜ]{3,}/.test(l)){ belegVon=l; break; }
+  }
+
+  // ── Datum: TT.MM.JJJJ oder TT.MM.JJ ─────────
+  let datum = null;
+  const dateRx = /(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})/g;
+  let dm;
+  while((dm=dateRx.exec(text))!==null){
+    const[,d,mo,y]=dm;
+    if(parseInt(mo)>=1&&parseInt(mo)<=12&&parseInt(d)>=1&&parseInt(d)<=31){
+      const year=y.length===2?`20${y}`:y;
+      datum=`${d.padStart(2,"0")}.${mo.padStart(2,"0")}.${year}`;
+      break;
+    }
+  }
+
+  // ── Gesamtbetrag ──────────────────────────────
+  let betrag = null;
+  const amtPatterns = [
+    /TOTAL\s+(\d+[,.]\d{2})\s*EUR/i,
+    /TOTAL[\s\S]{0,10}?(\d+[,.]\d{2})/i,
+    /GESAMT\s+EUR?\s*(\d+[,.]\d{2})/i,
+    /SUMME\s+EUR?\s*(\d+[,.]\d{2})/i,
+    /BRUTTO\s+(\d+[,.]\d{2})/i,
+    /Betrag\s+EUR\s+(\d+[,.]\d{2})/i,
+    /EUR\s*(\d{1,4}[,.]\d{2})\s*$/im,
+    /(\d{1,4}[,.]\d{2})\s*EUR\s*$/im,
+  ];
+  for(const rx of amtPatterns){
+    const m=text.match(rx);
+    if(m){ betrag=m[1].replace(".",","); break; }
+  }
+  // Fallback: größten Betrag im Text suchen
+  if(!betrag){
+    const all=[...text.matchAll(/(\d{1,4}[,.]\d{2})/g)].map(m=>parseFloat(m[1].replace(",",".")));
+    if(all.length){ betrag=fmtNum(Math.max(...all)); }
+  }
+
+  // ── Zahlungsart ───────────────────────────────
+  let zahlungsart = "Barzahlung";
+  if(/kartenzahlung|visa|mastercard|maestro|ec.?karte|debit|girocard|kontaktlos/i.test(text))
+    zahlungsart = "Kartenzahlung";
+
+  // ── MwSt-Satz ────────────────────────────────
+  let mwstSatz = 19;
+  if(/19[,.]0{1,2}\s*%|mwst\s*19|ust\s*19/i.test(text))      mwstSatz=19;
+  else if(/7[,.]0{1,2}\s*%|mwst\s*7|ust\s*7/i.test(text))    mwstSatz=7;
+  else                                                          mwstSatz=0;
+
+  // ── Netto ─────────────────────────────────────
+  let netto = null;
+  const nettoM=text.match(/NETTO\s+(\d+[,.]\d{2})/i);
+  if(nettoM) netto=nettoM[1].replace(".",",");
+
+  return { datum, betrag, zahlungsart, belegVon, mwstSatz, netto };
+};
+
+const runOCR = async (imageDataUrl, onProgress) => {
+  const { data: { text } } = await Tesseract.recognize(
+    imageDataUrl,
+    "deu",          // Deutsch für bessere Erkennung
+    { logger: m => {
+        if(m.status==="recognizing text")
+          onProgress(Math.round(m.progress*100));
+      }
+    }
+  );
+  return parseOCR(text);
+};
+
+/* ── PRINT ───────────────────────────────────── */
+const PCSS=`*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;color:#000;padding:22mm 20mm;font-size:10.5pt}h1{font-size:18pt;font-weight:bold;text-align:center;margin-bottom:4px}.sub{text-align:center;font-size:8.5pt;color:#444;margin-bottom:3px}.rule{border-top:2px solid #000;margin:12px 0 20px}.row{display:flex;gap:20px;margin-bottom:16px}.col{flex:1}.lbl{font-size:7.5pt;text-transform:uppercase;letter-spacing:.5px;color:#555;margin-bottom:3px}.val{font-size:10.5pt;border-bottom:1px solid #000;padding-bottom:4px;min-height:22px}.val.tall{min-height:70px;padding-top:3px;white-space:pre-wrap}.persons{border:1px solid #aaa;padding:8px;min-height:65px;line-height:1.9;font-size:10.5pt}.amts{border:2px solid #000;display:flex;align-items:center;padding:11px 14px;margin:16px 0;gap:20px}.amts .txt{flex:1;font-size:9pt}.amt{text-align:right}.amt .num{font-size:15pt;font-weight:bold;margin-top:2px}.mwst-box{background:#f5f5f5;border:1px solid #ccc;padding:9px 12px;margin:10px 0;display:flex;gap:24px;align-items:center;font-size:9.5pt}.mwst-box .badge{background:#1d3a5e;color:#fff;padding:2px 8px;border-radius:10px;font-weight:bold;font-size:9pt;margin-right:8px}.mwst-row{flex:1;display:flex;gap:18px}.mwst-item{text-align:right}.mwst-item .ml{font-size:7.5pt;text-transform:uppercase;color:#555}.mwst-item .mv{font-size:11pt;font-weight:bold}.footer{margin-top:36px;display:flex;justify-content:space-between}.sig{width:45%}.sig-line{border-bottom:1px solid #000;height:44px;margin-top:4px}.att img{max-width:240px;max-height:300px;border:1px solid #ccc;margin-top:14px}@media print{@page{margin:15mm}}`;
+
+const doPrint=(body)=>{const w=window.open("","_blank","width=820,height=960");if(!w){alert("Bitte Popups erlauben.");return;}w.document.write(`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><style>${PCSS}</style></head><body>${body}</body></html>`);w.document.close();setTimeout(()=>w.print(),600);};
+
+const mwstBlock=(mwst)=>mwst.satz>0?`<div class="mwst-box"><span class="badge">MwSt ${mwst.satz}%</span><div class="mwst-row"><div class="mwst-item"><div class="ml">Nettobetrag</div><div class="mv">EUR ${fmtNum(mwst.netto)}</div></div><div class="mwst-item"><div class="ml">MwSt-Betrag</div><div class="mv">EUR ${fmtNum(mwst.betrag)}</div></div><div class="mwst-item"><div class="ml">Bruttobetrag</div><div class="mv">EUR ${fmtNum(mwst.brutto)}</div></div></div></div>`:"";
+
+const buildEinkauf=(d,mwst,img)=>`
+<h1>Einkaufsliste</h1>
+<p class="sub">Angaben zum Nachweis der Höhe und der geschäftlichen Veranlassung</p>
+<div class="rule"></div>
+<div class="row"><div class="col"><div class="lbl">Datum des Einkaufs</div><div class="val">${d.datum}</div></div><div class="col"><div class="lbl">Zahlungsart</div><div class="val">${d.zahlungsart}</div></div></div>
+<div class="row"><div class="col"><div class="lbl">Beleg von</div><div class="val">${d.belegVon}</div></div><div class="col"><div class="lbl">Firma</div><div class="val">${d.firma}</div></div></div>
+<div class="row"><div class="col" style="flex:1 1 100%"><div class="lbl">Grund des Einkaufs</div><div class="val tall">${d.grund}${d.grundDetail?"\n"+d.grundDetail:""}</div></div></div>
+${img?`<div class="att"><div class="lbl">Anhang – Beleg/Foto</div><img src="${img}"/></div>`:""}
+<div class="amts"><span class="txt">Höhe der Aufwendungen laut beigefügter Rechnung</span><div class="amt"><div class="lbl">Rechnungsbetrag EUR</div><div class="num">${fmtNum(d.betrag)}</div></div></div>
+${mwstBlock(mwst)}
+<div class="footer"><div class="sig"><div class="lbl">Ort, Datum</div><div class="val">${d.signOrt}, ${d.datum}</div></div><div class="sig"><div class="lbl">Unterschrift</div><div class="sig-line"></div></div></div>`;
+
+const buildBewirtung=(d,pers,mwst,img)=>`
+<h1>Bewirtungskosten</h1>
+<p class="sub">Angaben zum Nachweis der Höhe und der geschäftlichen Veranlassung</p>
+<p class="sub">von Bewirtungsaufwendungen (§ 4 Abs. 5 Nr. 2 EStG)</p>
+<div class="rule"></div>
+<div class="row"><div class="col"><div class="lbl">Datum der Bewirtung</div><div class="val">${d.datum}</div></div><div class="col"><div class="lbl">Firma</div><div class="val">${d.firma}</div></div></div>
+<div class="row"><div class="col" style="flex:1 1 100%"><div class="lbl">Ort der Bewirtung</div><div class="val">${d.ort}</div></div></div>
+<div class="row"><div class="col" style="flex:1 1 100%"><div class="lbl">Anlass der Bewirtung</div><div class="val">${d.anlass}</div></div></div>
+<div class="row"><div class="col" style="flex:1 1 100%"><div class="lbl">Bewirtete Personen</div><div class="persons">${pers.join("<br/>")}</div></div></div>
+${img?`<div class="att"><div class="lbl">Anhang – Bewirtungsbeleg</div><img src="${img}"/></div>`:""}
+<div class="amts"><span class="txt">Höhe der Aufwendungen laut beigefügter Rechnung</span><div class="amt"><div class="lbl">Rechnungsbetrag EUR</div><div class="num">${fmtNum(d.betrag)}</div></div><div class="amt"><div class="lbl">Trinkgeld EUR</div><div class="num">${fmtNum(d.trinkgeld)||"0,00"}</div></div></div>
+${mwstBlock(mwst)}
+<div class="footer"><div class="sig"><div class="lbl">Ort, Datum</div><div class="val">${d.signOrt}, ${d.datum}</div></div><div class="sig"><div class="lbl">Unterschrift des Gastgebers</div><div class="sig-line"></div></div></div>`;
+
+/* ── SHARED UI ────────────────────────────────── */
+const IS=(f)=>({width:"100%",padding:"10px 13px",border:`1.5px solid ${f?C.borderFocus:C.border}`,borderRadius:7,fontSize:14,color:C.text,background:C.white,outline:"none",transition:"border-color .15s",boxShadow:f?"0 0 0 3px rgba(40,79,128,.1)":"none"});
+const CHV=`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%231d3a5e' d='M5 7L0 2h10z'/%3E%3C/svg%3E")`;
+
+function Lbl({text,req}){return <label style={{display:"block",fontSize:11,fontWeight:600,letterSpacing:".7px",textTransform:"uppercase",color:C.navyMid,marginBottom:5}}>{text}{req&&<span style={{color:C.amberBri,marginLeft:3}}>*</span>}</label>}
+function F({label,req,style,children}){return <div style={{marginBottom:18,flex:"1 1 240px",...style}}><Lbl text={label} req={req}/>{children}</div>}
+function FF({label,req,children}){return <div style={{marginBottom:18}}><Lbl text={label} req={req}/>{children}</div>}
+function Row({children}){return <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>{children}</div>}
+function TI({value,onChange,placeholder}){const[f,sf]=useState(false);return <input type="text" value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} style={IS(f)} onFocus={()=>sf(true)} onBlur={()=>sf(false)}/>}
+function TA({value,onChange,placeholder,rows=3}){const[f,sf]=useState(false);return <textarea value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} rows={rows} style={{...IS(f),resize:"vertical",lineHeight:1.6}} onFocus={()=>sf(true)} onBlur={()=>sf(false)}/>}
+
+function Sel({value,onChange,options,placeholder}){
+  const[f,sf]=useState(false);const[cust,sc]=useState(false);const[cv,scv]=useState("");
+  if(cust)return <div style={{display:"flex",gap:8}}>
+    <input autoFocus value={cv} onChange={e=>scv(e.target.value)} placeholder="Eigenen Wert eingeben …" onKeyDown={e=>{if(e.key==="Enter"){onChange(cv);sc(false);scv("");}}} style={{...IS(true),flex:1}}/>
+    <button onClick={()=>{onChange(cv);sc(false);scv("");}} style={{padding:"0 14px",background:C.amber,color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontWeight:600}}>OK</button>
+    <button onClick={()=>{sc(false);scv("");}} style={{padding:"0 10px",background:C.paper,color:C.muted,border:`1.5px solid ${C.border}`,borderRadius:7,cursor:"pointer"}}>✕</button>
+  </div>;
+  return <select value={value} onChange={e=>{if(e.target.value==="__c__")sc(true);else onChange(e.target.value);}} style={{...IS(f),appearance:"none",WebkitAppearance:"none",cursor:"pointer",paddingRight:36,backgroundImage:CHV,backgroundRepeat:"no-repeat",backgroundPosition:"right 12px center"}} onFocus={()=>sf(true)} onBlur={()=>sf(false)}>
+    <option value="" disabled>{placeholder||"Bitte auswählen …"}</option>
+    {options.map(o=><option key={o} value={o}>{o}</option>)}
+    <option value="__c__">✏️ Eigene Eingabe …</option>
+  </select>;
+}
+
+function ZahlPicker({value,onChange}){return <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+  {[["Kartenzahlung","💳"],["Barzahlung","💵"],["Privat","🏠"]].map(([k,ic])=>(
+    <button key={k} onClick={()=>onChange(k)} style={{padding:"9px 15px",borderRadius:20,cursor:"pointer",fontSize:13.5,border:value===k?"none":`1.5px solid ${C.border}`,background:value===k?C.navyMid:C.white,color:value===k?"#fff":C.textSub,fontWeight:value===k?600:400,boxShadow:value===k?"0 2px 8px rgba(21,39,65,.3)":"none",transition:"all .15s"}}>{ic} {k}</button>
+  ))}
+</div>}
+
+function MwStPicker({satz,onChange}){return <div style={{display:"flex",gap:8}}>
+  {[0,7,19].map(s=>(
+    <button key={s} onClick={()=>onChange(s)} style={{padding:"9px 22px",borderRadius:20,cursor:"pointer",fontSize:14,fontWeight:600,border:satz===s?"none":`1.5px solid ${C.border}`,background:satz===s?C.navyMid:C.white,color:satz===s?"#fff":C.textSub,boxShadow:satz===s?"0 2px 8px rgba(21,39,65,.3)":"none",transition:"all .15s"}}>{s} %</button>
+  ))}
+</div>}
+
+function MwStCalc({brutto,satz}){
+  const b=parseAmt(brutto);
+  const netto=satz>0?b/(1+satz/100):b;
+  const mwstB=b-netto;
+  if(b===0)return <div style={{padding:"14px 16px",background:C.paper,borderRadius:8,border:`1.5px solid ${C.border}`,color:C.muted,fontSize:13,textAlign:"center"}}>Rechnungsbetrag eingeben für Berechnung</div>;
+  return <div style={{background:C.white,border:`1.5px solid ${C.border}`,borderRadius:8,overflow:"hidden"}}>
+    <div style={{background:C.navyMid,padding:"8px 14px",display:"flex",alignItems:"center",gap:10}}>
+      <span style={{background:C.gold,color:C.navy,padding:"2px 10px",borderRadius:20,fontSize:11,fontWeight:700}}>MwSt {satz} %</span>
+      <span style={{color:"rgba(255,255,255,.65)",fontSize:12}}>Steueraufschlüsselung</span>
+    </div>
+    <div style={{display:"flex"}}>
+      {[["Nettobetrag",netto,""],["MwSt-Betrag",mwstB,C.amber],["Bruttobetrag",b,C.navyLight]].map(([lbl,val,col],i)=>(
+        <div key={lbl} style={{flex:1,padding:"12px 14px",borderRight:i<2?`1px solid ${C.border}`:"none"}}>
+          <div style={{fontSize:10,fontWeight:600,letterSpacing:".5px",textTransform:"uppercase",color:C.muted,marginBottom:4}}>{lbl}</div>
+          <div style={{fontSize:17,fontWeight:700,color:col||C.text}}>EUR {fmtNum(val)}</div>
+        </div>
+      ))}
+    </div>
+  </div>;
+}
+
+function MultiPerson({persons,onChange,options}){
+  const[cust,sc]=useState(false);const[cv,scv]=useState("");
+  const add=(n)=>{if(n&&!persons.includes(n))onChange([...persons,n]);scv("");sc(false);};
+  return <div>
+    {persons.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:10}}>
+      {persons.map((p,i)=><span key={i} style={{background:C.navyMid,color:"#fff",padding:"5px 12px 5px 14px",borderRadius:20,fontSize:13,display:"flex",alignItems:"center",gap:8}}>{p}
+        <button onClick={()=>onChange(persons.filter((_,j)=>j!==i))} style={{background:"none",border:"none",color:"rgba(255,255,255,.7)",cursor:"pointer",padding:0,fontSize:15,lineHeight:1}}>×</button>
+      </span>)}
+    </div>}
+    {cust?<div style={{display:"flex",gap:8}}>
+      <input autoFocus value={cv} onChange={e=>scv(e.target.value)} placeholder="Name, Funktion …" onKeyDown={e=>{if(e.key==="Enter")add(cv);}} style={{...IS(true),flex:1}}/>
+      <button onClick={()=>add(cv)} style={{padding:"0 14px",background:C.amber,color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontWeight:700,fontSize:17}}>+</button>
+      <button onClick={()=>{sc(false);scv("");}} style={{padding:"0 10px",background:C.paper,color:C.muted,border:`1.5px solid ${C.border}`,borderRadius:7,cursor:"pointer"}}>✕</button>
+    </div>:
+    <select value="" onChange={e=>{if(e.target.value==="__c__")sc(true);else if(e.target.value)add(e.target.value);}} style={{...IS(false),appearance:"none",WebkitAppearance:"none",cursor:"pointer",paddingRight:36,backgroundImage:CHV,backgroundRepeat:"no-repeat",backgroundPosition:"right 12px center"}}>
+      <option value="">Person hinzufügen …</option>
+      {options.filter(o=>!persons.includes(o)).map(o=><option key={o} value={o}>{o}</option>)}
+      <option value="__c__">✏️ Eigene Eingabe …</option>
+    </select>}
+  </div>;
+}
+
+/* ── IMAGE UPLOAD + OCR SCAN ─────────────────── */
+function ImgUpload({imgUrl, onChange, onScanResult}){
+  const ref=useRef();
+  const[drag,sd]=useState(false);
+  const[scanning,ss]=useState(false);
+  const[progress,sp]=useState(0);
+  const[status,sst]=useState("");
+  const[scanOk,sok]=useState(false);
+  const[scanErr,se]=useState("");
+
+  const handle=(file)=>{
+    if(!file||!file.type.startsWith("image/"))return;
+    se(""); sok(false); ss(false); sp(0); sst("");
+    const r=new FileReader();
+    r.onload=e=>onChange(e.target.result);
+    r.readAsDataURL(file);
+  };
+
+  const doScan=async()=>{
+    if(!imgUrl)return;
+    ss(true); se(""); sok(false); sp(0); sst("Lade OCR-Engine …");
+    try{
+      sst("Erkenne Text …");
+      const result=await runOCR(imgUrl,(pct)=>{ sp(pct); sst(`Erkenne Text … ${pct}%`); });
+      sst("Analysiere Beleg …");
+      onScanResult(result);
+      sok(true); sst("");
+      setTimeout(()=>sok(false),5000);
+    }catch(err){
+      se("OCR fehlgeschlagen: "+err.message);
+      sst("");
+    }
+    ss(false);
+  };
+
+  return <div>
+    <input ref={ref} type="file" accept="image/*" capture="environment"
+      onChange={e=>handle(e.target.files[0])} style={{display:"none"}}/>
+
+    {imgUrl ? <div>
+      <div style={{position:"relative",display:"inline-block",marginBottom:10}}>
+        <img src={imgUrl} alt="Beleg" style={{maxHeight:170,maxWidth:"100%",borderRadius:8,border:`2px solid ${C.border}`,display:"block"}}/>
+        <button onClick={()=>{onChange(null);se("");sok(false);ss(false);}} style={{position:"absolute",top:-8,right:-8,background:C.danger,color:"#fff",border:"none",borderRadius:"50%",width:24,height:24,cursor:"pointer",fontWeight:700,fontSize:13}}>×</button>
+      </div>
+
+      {/* Scan-Button */}
+      {!scanning && !scanOk && (
+        <button onClick={doScan} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 20px",background:`linear-gradient(135deg,${C.navyMid},${C.navyLight})`,color:"#fff",border:"none",borderRadius:8,fontSize:14,fontWeight:600,cursor:"pointer",boxShadow:"0 2px 10px rgba(21,39,65,.25)",marginBottom:8}}>
+          <span style={{fontSize:18}}>🔍</span>
+          Beleg automatisch auslesen
+        </button>
+      )}
+
+      {/* Fortschrittsanzeige */}
+      {scanning && (
+        <div style={{background:C.navyMid,borderRadius:9,padding:"12px 16px",marginBottom:8}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
+            <span className="spinner"/>
+            <span style={{color:"#fff",fontSize:13,fontWeight:500}}>{status}</span>
+          </div>
+          <div className="progress-bar-wrap">
+            <div className="progress-bar-fill" style={{width:`${progress}%`}}/>
+          </div>
+        </div>
+      )}
+
+      {/* Erfolgsmeldung */}
+      {scanOk && (
+        <div style={{background:"#f0fdf4",border:"1.5px solid #86efac",borderRadius:8,padding:"10px 14px",marginBottom:8,display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:18}}>✅</span>
+          <div>
+            <div style={{color:C.success,fontWeight:600,fontSize:13}}>Felder wurden automatisch befüllt!</div>
+            <div style={{color:C.muted,fontSize:12,marginTop:1}}>Bitte prüfen und bei Bedarf korrigieren.</div>
+          </div>
+        </div>
+      )}
+
+      {scanErr && (
+        <div style={{background:"#fef2f2",border:"1.5px solid #fca5a5",borderRadius:8,padding:"10px 14px",marginBottom:8,color:C.danger,fontSize:13}}>{scanErr}</div>
+      )}
+
+      {!scanning && (
+        <button onClick={()=>ref.current.click()} style={{padding:"6px 12px",background:C.paper,color:C.muted,border:`1.5px solid ${C.border}`,borderRadius:6,fontSize:12,cursor:"pointer"}}>Bild ersetzen</button>
+      )}
+
+    </div> : (
+      <div onClick={()=>ref.current.click()}
+        onDrop={e=>{e.preventDefault();sd(false);handle(e.dataTransfer.files[0]);}}
+        onDragOver={e=>{e.preventDefault();sd(true);}} onDragLeave={()=>sd(false)}
+        style={{border:`2px dashed ${drag?C.amberBri:C.border}`,borderRadius:10,padding:"28px 20px",textAlign:"center",cursor:"pointer",background:drag?"rgba(232,146,10,.08)":C.paper,transition:"all .15s"}}>
+        <div style={{fontSize:32,marginBottom:8}}>📷</div>
+        <div style={{fontSize:14,color:C.muted,lineHeight:1.7}}>
+          Foto / Scan hierher ziehen<br/>
+          <span style={{color:C.navyLight,fontWeight:600}}>oder klicken zum Auswählen</span>
+        </div>
+      </div>
+    )}
+  </div>;
+}
+
+const BVAR={primary:{background:`linear-gradient(135deg,${C.navyMid},${C.navyLight})`,color:"#fff",border:"none"},secondary:{background:C.white,color:C.navyMid,border:`1.5px solid ${C.border}`},success:{background:`linear-gradient(135deg,${C.success},#3a7a50)`,color:"#fff",border:"none"},amber:{background:`linear-gradient(135deg,${C.amber},${C.amberBri})`,color:"#fff",border:"none"}};
+function Btn({children,onClick,variant="primary",icon,disabled,full}){return <button onClick={onClick} disabled={disabled} style={{...BVAR[variant],padding:"11px 20px",borderRadius:8,cursor:disabled?"not-allowed":"pointer",fontSize:14,fontWeight:600,display:"inline-flex",alignItems:"center",gap:8,width:full?"100%":"auto",justifyContent:"center",opacity:disabled?.5:1,transition:"opacity .15s",boxShadow:variant==="secondary"?"none":"0 2px 10px rgba(0,0,0,.15)"}}>{icon&&<span style={{fontSize:15}}>{icon}</span>}{children}</button>}
+
+function Sec({title,children}){return <div style={{marginBottom:4}}>
+  <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18,marginTop:26}}>
+    <div style={{height:1,flex:1,background:C.border}}/>
+    <span style={{fontSize:10.5,fontWeight:700,letterSpacing:"1.2px",textTransform:"uppercase",color:C.navyMid,whiteSpace:"nowrap"}}>{title}</span>
+    <div style={{height:1,flex:1,background:C.border}}/>
+  </div>
+  {children}
+</div>}
+
+function SumBar({left,right}){return <div style={{background:C.navyMid,borderRadius:10,padding:"12px 16px",marginTop:8}}>
+  <div style={{color:"rgba(255,255,255,.5)",fontSize:10,letterSpacing:"1px",textTransform:"uppercase",marginBottom:4}}>Zusammenfassung</div>
+  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+    <div style={{color:"rgba(255,255,255,.8)",fontSize:13}}>{left}</div>
+    <div style={{color:C.gold,fontSize:20,fontWeight:700}}>{right}</div>
+  </div>
+</div>}
+
+/* ── HERO ─────────────────────────────────────── */
+function TopBar(){return <div style={{position:"sticky",top:0,zIndex:50,background:C.white,borderBottom:`1px solid ${C.border}`,padding:"0 16px",height:52,display:"flex",alignItems:"center",gap:12}}>
+  <a href="/" style={{display:"inline-flex",alignItems:"center",gap:7,color:C.navyMid,textDecoration:"none",fontSize:13.5,fontWeight:600}}>
+    <span style={{fontSize:17,lineHeight:1}}>←</span> Werkbank
+  </a>
+  <span style={{width:1,height:20,background:C.border}}/>
+  <div style={{display:"flex",alignItems:"center",gap:9}}>
+    <svg width="22" height="22" viewBox="0 0 52 52" fill="none">
+      <rect x="10" y="22" width="32" height="24" rx="2" fill="none" stroke={C.amber} strokeWidth="2.5"/>
+      <polyline points="6,22 26,10 46,22" fill="none" stroke={C.amber} strokeWidth="2.5"/>
+      <rect x="22" y="32" width="8" height="14" rx="1" fill={C.amber}/>
+    </svg>
+    <span style={{fontFamily:FD,fontWeight:700,color:C.navy,fontSize:16}}>Belegscan</span>
+  </div>
+</div>}
+
+function FHead({title,icon,sub,onBack}){return <div style={{background:`linear-gradient(135deg,${C.navy},${C.navyMid})`,padding:"18px 22px 16px"}}>
+  <button onClick={onBack} style={{background:"none",border:"none",color:"rgba(255,255,255,.65)",cursor:"pointer",fontSize:13,padding:0,display:"flex",alignItems:"center",gap:5,marginBottom:12}}>← Zurück</button>
+  <div style={{display:"flex",alignItems:"center",gap:12}}>
+    <span style={{fontSize:28}}>{icon}</span>
+    <div>
+      <h2 style={{color:"#fff",fontSize:20,fontFamily:FD,fontWeight:700,margin:0}}>{title}</h2>
+      <p style={{color:"rgba(255,255,255,.55)",fontSize:12,margin:"2px 0 0"}}>{sub}</p>
+    </div>
+  </div>
+</div>}
+
+/* ── HOME ─────────────────────────────────────── */
+function Home({setView}){return <div>
+  <div style={{maxWidth:660,margin:"0 auto",padding:"28px 18px 48px"}}>
+    <h1 style={{fontFamily:FD,fontWeight:700,color:C.navy,fontSize:22,marginBottom:4}}>Beleg erfassen</h1>
+    <p style={{color:C.muted,fontSize:13,marginBottom:22}}>Belegtyp wählen:</p>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:15,marginBottom:18}}>
+      {[["🛒","Einkaufsliste","Wareneingang · Betriebsbedarf","OCR-Scan + MwSt-Berechnung","einkauf"],
+        ["🍽️","Bewirtungsbeleg","§ 4 Abs. 5 Nr. 2 EStG","OCR-Scan + MwSt-Berechnung","bewirtung"]].map(([ic,ti,su,de,vi])=>(
+        <button key={vi} onClick={()=>setView(vi)} style={{background:C.white,border:`1.5px solid ${C.border}`,borderRadius:13,padding:"22px 18px",cursor:"pointer",textAlign:"left",transition:"all .18s",boxShadow:"0 2px 10px rgba(0,0,0,.07)"}}
+          onMouseEnter={e=>{e.currentTarget.style.transform="translateY(-2px)";e.currentTarget.style.boxShadow="0 6px 22px rgba(0,0,0,.12)";e.currentTarget.style.borderColor=C.navyLight;}}
+          onMouseLeave={e=>{e.currentTarget.style.transform="none";e.currentTarget.style.boxShadow="0 2px 10px rgba(0,0,0,.07)";e.currentTarget.style.borderColor=C.border;}}>
+          <div style={{fontSize:32,marginBottom:9}}>{ic}</div>
+          <div style={{fontWeight:700,fontSize:15.5,color:C.navy,fontFamily:FD,marginBottom:2}}>{ti}</div>
+          <div style={{fontSize:9.5,color:C.amberBri,fontWeight:600,letterSpacing:"1px",textTransform:"uppercase",marginBottom:8}}>{su}</div>
+          <div style={{fontSize:12.5,color:C.muted,lineHeight:1.5}}>{de}</div>
+          <div style={{marginTop:12,display:"flex",alignItems:"center",gap:5,color:C.navyLight,fontSize:13,fontWeight:600}}>Erfassen <span>→</span></div>
+        </button>
+      ))}
+    </div>
+    <button onClick={()=>setView("settings")} style={{width:"100%",background:C.paper,border:`1.5px solid ${C.border}`,borderRadius:11,padding:"15px 20px",cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:13,transition:"border-color .15s"}}
+      onMouseEnter={e=>e.currentTarget.style.borderColor=C.navyLight} onMouseLeave={e=>e.currentTarget.style.borderColor=C.border}>
+      <span style={{fontSize:22}}>⚙️</span>
+      <div>
+        <div style={{fontWeight:600,fontSize:14.5,color:C.navy}}>Stammdaten & Dropdown-Listen</div>
+        <div style={{fontSize:12,color:C.muted,marginTop:1}}>Firmen, Orte, Personen, Anlässe konfigurieren</div>
+      </div>
+      <span style={{marginLeft:"auto",color:C.navyLight,fontSize:16}}>→</span>
+    </button>
+  </div>
+</div>}
+
+/* ── EINKAUF FORM ─────────────────────────────── */
+function EinkaufForm({settings,setView}){
+  const[d,sd]=useState({datum:today(),zahlungsart:"Kartenzahlung",belegVon:"",firma:"",grund:"",grundDetail:"",betrag:"",signOrt:""});
+  const[img,si]=useState(null);
+  const[mwstSatz,sm]=useState(19);
+  const[done,sdo]=useState(false);
+  const set=k=>v=>sd(p=>({...p,[k]:v}));
+  const valid=d.zahlungsart&&d.belegVon&&d.firma&&d.betrag&&d.signOrt;
+
+  const brutto=parseAmt(d.betrag);
+  const netto=mwstSatz>0?brutto/(1+mwstSatz/100):brutto;
+  const mwstObj={satz:mwstSatz,brutto,netto,betrag:brutto-netto};
+
+  const handleScan=(r)=>{
+    if(!r)return;
+    sd(p=>({...p,
+      datum:      r.datum       ||p.datum,
+      zahlungsart:r.zahlungsart ||p.zahlungsart,
+      belegVon:   r.belegVon    ||p.belegVon,
+      betrag:     r.betrag      ||p.betrag,
+    }));
+    if(r.mwstSatz!=null)sm(r.mwstSatz);
+  };
+
+  const doEx=()=>{doPrint(buildEinkauf(d,mwstObj,img));sdo(true);setTimeout(()=>sdo(false),3000);};
+
+  return <div style={{background:C.cream,minHeight:"100vh"}}>
+    <FHead title="Einkaufsliste" icon="🛒" sub="Nachweis der geschäftlichen Veranlassung" onBack={()=>setView("home")}/>
+    <div style={{maxWidth:660,margin:"0 auto",padding:"6px 18px 56px"}}>
+
+      <Sec title="Basisdaten">
+        <Row>
+          <F label="Datum" req style={{flex:"1 1 150px"}}><TI value={d.datum} onChange={set("datum")}/></F>
+          <F label="Zahlungsart" req style={{flex:"1 1 280px"}}><ZahlPicker value={d.zahlungsart} onChange={set("zahlungsart")}/></F>
+        </Row>
+      </Sec>
+
+      <Sec title="Herkunft & Zuordnung">
+        <Row>
+          <F label="Beleg von (Händler)" req><Sel value={d.belegVon} onChange={set("belegVon")} options={settings.belegVon} placeholder="Händler auswählen …"/></F>
+          <F label="Firma" req><Sel value={d.firma} onChange={set("firma")} options={settings.firmen} placeholder="Firma auswählen …"/></F>
+        </Row>
+      </Sec>
+
+      <Sec title="Begründung">
+        <FF label="Grund des Einkaufs" req><Sel value={d.grund} onChange={set("grund")} options={settings.einkaufszwecke} placeholder="Zweck auswählen …"/></FF>
+        <FF label="Ergänzung (optional)"><TA value={d.grundDetail} onChange={set("grundDetail")} placeholder="Weitere Details …"/></FF>
+      </Sec>
+
+      <Sec title="Beleg-Foto / Scan">
+        <FF label="Beleg hochladen – OCR liest automatisch aus (kein API Key, keine Kosten)">
+          <ImgUpload imgUrl={img} onChange={si} onScanResult={handleScan}/>
+        </FF>
+      </Sec>
+
+      <Sec title="Mehrwertsteuer">
+        <FF label="MwSt-Satz"><MwStPicker satz={mwstSatz} onChange={sm}/></FF>
+        <MwStCalc brutto={d.betrag} satz={mwstSatz}/>
+      </Sec>
+
+      <Sec title="Betrag & Unterschrift">
+        <Row>
+          <F label="Rechnungsbetrag (EUR)" req style={{flex:"1 1 150px"}}><TI value={d.betrag} onChange={set("betrag")} placeholder="0,00"/></F>
+          <F label="Ort der Unterschrift" req style={{flex:"1 1 200px"}}><Sel value={d.signOrt} onChange={set("signOrt")} options={settings.signOrte} placeholder="Ort auswählen …"/></F>
+        </Row>
+        <SumBar left={`${d.firma||"–"} · ${d.zahlungsart} · ${d.datum}`} right={`EUR ${fmtNum(d.betrag)}`}/>
+      </Sec>
+
+      <div style={{marginTop:24,display:"flex",gap:10,flexWrap:"wrap"}}>
+        <Btn onClick={doEx} variant={done?"success":"amber"} icon={done?"✓":"🖨️"} disabled={!valid} full>{done?"PDF geöffnet – jetzt ausdrucken!":"Als PDF exportieren & drucken"}</Btn>
+        <Btn onClick={()=>setView("home")} variant="secondary" full>Abbrechen</Btn>
+      </div>
+      {!valid&&<p style={{textAlign:"center",color:C.danger,fontSize:12,marginTop:9}}>Bitte alle Pflichtfelder (*) ausfüllen.</p>}
+    </div>
+  </div>;
+}
+
+/* ── BEWIRTUNG FORM ───────────────────────────── */
+function BewirtungForm({settings,setView}){
+  const[d,sd]=useState({datum:today(),firma:"",ort:"",anlass:"",betrag:"",trinkgeld:"",signOrt:""});
+  const[pers,sp]=useState([]);
+  const[img,si]=useState(null);
+  const[mwstSatz,sm]=useState(19);
+  const[done,sdo]=useState(false);
+  const set=k=>v=>sd(p=>({...p,[k]:v}));
+  const valid=d.firma&&d.ort&&d.anlass&&pers.length>0&&d.betrag&&d.signOrt;
+
+  const brutto=parseAmt(d.betrag);
+  const netto=mwstSatz>0?brutto/(1+mwstSatz/100):brutto;
+  const mwstObj={satz:mwstSatz,brutto,netto,betrag:brutto-netto};
+
+  const handleScan=(r)=>{
+    if(!r)return;
+    sd(p=>({...p,datum:r.datum||p.datum,betrag:r.betrag||p.betrag}));
+    if(r.mwstSatz!=null)sm(r.mwstSatz);
+  };
+
+  const doEx=()=>{doPrint(buildBewirtung(d,pers,mwstObj,img));sdo(true);setTimeout(()=>sdo(false),3000);};
+
+  return <div style={{background:C.cream,minHeight:"100vh"}}>
+    <FHead title="Bewirtungsbeleg" icon="🍽️" sub="§ 4 Abs. 5 Nr. 2 EStG – Nachweis der Bewirtungsaufwendungen" onBack={()=>setView("home")}/>
+    <div style={{maxWidth:660,margin:"0 auto",padding:"6px 18px 56px"}}>
+
+      <Sec title="Bewirtungsdaten">
+        <Row>
+          <F label="Datum" req style={{flex:"1 1 150px"}}><TI value={d.datum} onChange={set("datum")}/></F>
+          <F label="Firma" req><Sel value={d.firma} onChange={set("firma")} options={settings.firmen} placeholder="Firma auswählen …"/></F>
+        </Row>
+        <FF label="Ort der Bewirtung (Name, Anschrift)" req><Sel value={d.ort} onChange={set("ort")} options={settings.orte} placeholder="Restaurant / Ort …"/></FF>
+        <FF label="Anlass der Bewirtung" req><Sel value={d.anlass} onChange={set("anlass")} options={settings.anlaesse} placeholder="Anlass auswählen …"/></FF>
+      </Sec>
+
+      <Sec title="Bewirtete Personen">
+        <FF label="Personen hinzufügen" req><MultiPerson persons={pers} onChange={sp} options={settings.personen}/></FF>
+        {pers.length===0&&<p style={{fontSize:12,color:C.danger,marginTop:-10}}>Mindestens eine Person erforderlich.</p>}
+      </Sec>
+
+      <Sec title="Beleg-Foto / Scan">
+        <FF label="Bewirtungsbeleg hochladen – OCR liest automatisch aus">
+          <ImgUpload imgUrl={img} onChange={si} onScanResult={handleScan}/>
+        </FF>
+      </Sec>
+
+      <Sec title="Mehrwertsteuer">
+        <FF label="MwSt-Satz"><MwStPicker satz={mwstSatz} onChange={sm}/></FF>
+        <MwStCalc brutto={d.betrag} satz={mwstSatz}/>
+      </Sec>
+
+      <Sec title="Betrag & Unterschrift">
+        <Row>
+          <F label="Rechnungsbetrag (EUR)" req style={{flex:"1 1 140px"}}><TI value={d.betrag} onChange={set("betrag")} placeholder="0,00"/></F>
+          <F label="Trinkgeld (EUR)" style={{flex:"1 1 110px"}}><TI value={d.trinkgeld} onChange={set("trinkgeld")} placeholder="0,00"/></F>
+          <F label="Ort der Unterschrift" req style={{flex:"1 1 170px"}}><Sel value={d.signOrt} onChange={set("signOrt")} options={settings.signOrte} placeholder="Ort …"/></F>
+        </Row>
+        <SumBar left={`${pers.length} Person${pers.length!==1?"en":""} · ${d.datum}${d.ort?" · "+d.ort.split(",")[0]:""}`} right={`EUR ${fmtNum(d.betrag)}${d.trinkgeld?" + "+fmtNum(d.trinkgeld)+" TG":""}`}/>
+      </Sec>
+
+      <div style={{marginTop:24,display:"flex",gap:10,flexWrap:"wrap"}}>
+        <Btn onClick={doEx} variant={done?"success":"amber"} icon={done?"✓":"🖨️"} disabled={!valid} full>{done?"PDF geöffnet – jetzt ausdrucken!":"Als PDF exportieren & drucken"}</Btn>
+        <Btn onClick={()=>setView("home")} variant="secondary" full>Abbrechen</Btn>
+      </div>
+      {!valid&&<p style={{textAlign:"center",color:C.danger,fontSize:12,marginTop:9}}>Bitte alle Pflichtfelder (*) ausfüllen.</p>}
+    </div>
+  </div>;
+}
+
+/* ── SETTINGS ─────────────────────────────────── */
+function ListEd({title,icon,items,onUpdate}){
+  const[nv,snv]=useState("");const[f,sf]=useState(false);
+  const add=()=>{const v=nv.trim();if(v&&!items.includes(v)){onUpdate([...items,v]);snv("");}};
+  return <div style={{background:C.white,borderRadius:11,padding:"16px 18px",border:`1.5px solid ${C.border}`,marginBottom:13}}>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+      <span style={{fontSize:18}}>{icon}</span>
+      <span style={{fontSize:13.5,fontWeight:700,color:C.navy}}>{title}</span>
+      <span style={{marginLeft:"auto",background:"rgba(232,146,10,.15)",color:C.amber,padding:"1px 9px",borderRadius:20,fontSize:11,fontWeight:700}}>{items.length}</span>
+    </div>
+    <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:11}}>
+      {items.length===0?<span style={{color:C.muted,fontSize:12}}>Keine Einträge</span>:items.map((it,i)=>(
+        <span key={i} style={{background:C.paper,border:`1px solid ${C.border}`,padding:"4px 10px 4px 12px",borderRadius:20,fontSize:13,display:"flex",alignItems:"center",gap:5,color:C.textSub}}>
+          {it}<button onClick={()=>onUpdate(items.filter((_,j)=>j!==i))} style={{background:"none",border:"none",color:C.muted,cursor:"pointer",padding:0,fontSize:13,lineHeight:1}}>×</button>
+        </span>
+      ))}
+    </div>
+    <div style={{display:"flex",gap:8}}>
+      <input value={nv} onChange={e=>snv(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")add();}} placeholder="Neuen Eintrag hinzufügen …" style={{...IS(f),flex:1}} onFocus={()=>sf(true)} onBlur={()=>sf(false)}/>
+      <button onClick={add} style={{padding:"0 14px",background:C.amber,color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontWeight:700,fontSize:17}}>+</button>
+    </div>
+  </div>;
+}
+
+function Settings({settings,onSave,setView}){
+  const[s,ss]=useState(settings);const[saved,sv]=useState(false);
+  const upd=k=>v=>ss(p=>({...p,[k]:v}));
+  const doSave=()=>{onSave(s);sv(true);setTimeout(()=>sv(false),2500);};
+  return <div style={{background:C.cream,minHeight:"100vh"}}>
+    <FHead title="Stammdaten & Einstellungen" icon="⚙️" sub="Dropdown-Listen konfigurieren" onBack={()=>setView("home")}/>
+    <div style={{maxWidth:660,margin:"0 auto",padding:"20px 18px 56px"}}>
+      <p style={{color:C.muted,fontSize:13,marginBottom:18,lineHeight:1.6}}>Einmalig konfigurieren – dauerhaft im Browser gespeichert:</p>
+      <ListEd title="Firmen"                      icon="🏢" items={s.firmen}         onUpdate={upd("firmen")}/>
+      <ListEd title="Orte (Restaurant / Adresse)" icon="📍" items={s.orte}           onUpdate={upd("orte")}/>
+      <ListEd title="Bewirtungs-Anlässe"          icon="💼" items={s.anlaesse}        onUpdate={upd("anlaesse")}/>
+      <ListEd title="Personen (Bewirtung)"        icon="👤" items={s.personen}        onUpdate={upd("personen")}/>
+      <ListEd title="Einkaufszwecke"              icon="🛒" items={s.einkaufszwecke} onUpdate={upd("einkaufszwecke")}/>
+      <ListEd title="Händler / Beleghersteller"   icon="🏪" items={s.belegVon}        onUpdate={upd("belegVon")}/>
+      <ListEd title="Unterschrifts-Orte"          icon="✍️" items={s.signOrte}        onUpdate={upd("signOrte")}/>
+      <div style={{marginTop:24,display:"flex",gap:10,flexWrap:"wrap"}}>
+        <Btn onClick={doSave} variant={saved?"success":"primary"} icon={saved?"✓":"💾"} full>{saved?"Gespeichert!":"Änderungen speichern"}</Btn>
+        <Btn onClick={()=>setView("home")} variant="secondary" full>Zurück ohne Speichern</Btn>
+      </div>
+    </div>
+  </div>;
+}
+
+/* ── ROOT ─────────────────────────────────────── */
+function App(){
+  const[view,sv]=useState("home");
+  const[settings,ss]=useState(loadS);
+  const save=(s)=>{ss(s);saveS(s);};
+  return <div style={{fontFamily:FB,minHeight:"100vh",background:C.cream}}>
+    <TopBar/>
+    {view==="home"      &&<Home setView={sv}/>}
+    {view==="einkauf"   &&<EinkaufForm   settings={settings} setView={sv}/>}
+    {view==="bewirtung" &&<BewirtungForm settings={settings} setView={sv}/>}
+    {view==="settings"  &&<Settings settings={settings} onSave={save} setView={sv}/>}
+  </div>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
