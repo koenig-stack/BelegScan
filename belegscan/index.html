@@ -645,5 +645,77 @@ function App(){
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 </script>
+
+<!-- ── Rechtliches: Footer + Impressum/Datenschutz (§ 5 DDG, DSGVO).
+     Bewusst außerhalb von #root, damit React die Knoten nicht überschreibt. ── -->
+<style>
+  .lg-footer{border-top:1px solid #d9d2c2;padding:14px 20px;text-align:center;font:400 12px/1.5 'Source Sans 3',system-ui,sans-serif;color:#7a7060;display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;justify-content:center;background:#faf8f2;}
+  .lg-footer a{color:#c4780c;text-decoration:none;}
+  .lg-overlay{position:fixed;inset:0;background:rgba(21,39,65,.45);display:none;align-items:flex-start;justify-content:center;padding:24px 16px;overflow-y:auto;z-index:9999;}
+  .lg-overlay.open{display:flex;}
+  .lg-card{background:#fff;border-radius:12px;max-width:640px;width:100%;padding:28px;box-shadow:0 20px 60px rgba(21,39,65,.35);font:400 13px/1.65 'Source Sans 3',system-ui,sans-serif;color:#4a4232;}
+  .lg-card h2{font:700 22px/1.2 'Playfair Display',Georgia,serif;color:#152741;margin:0 0 12px;}
+  .lg-card h4{font-size:14px;font-weight:700;color:#1a1510;margin:16px 0 4px;}
+  .lg-card p,.lg-card li{margin:0 0 8px;}
+  .lg-card ul{padding-left:18px;}
+  .lg-card a{color:#c4780c;}
+  .lg-close{margin-top:18px;background:#152741;color:#fff;border:none;border-radius:8px;padding:10px 22px;font-weight:700;cursor:pointer;}
+</style>
+
+<footer class="lg-footer">
+  <span>&copy; <span id="lgYear"></span> handwert GmbH</span>
+  <a href="#" onclick="lgOpen('impressum');return false;">Impressum</a>
+  <a href="#" onclick="lgOpen('datenschutz');return false;">Datenschutz</a>
+</footer>
+
+<div class="lg-overlay" id="lg-impressum" onclick="if(event.target===this)lgClose('impressum')">
+  <div class="lg-card">
+    <h2>Impressum</h2>
+    <h4>Angaben gemäß § 5 DDG (Digitale-Dienste-Gesetz)</h4>
+    <p>handwert GmbH (in Gründung)<br>Naunheimer Straße 8<br>35576 Wetzlar</p>
+    <h4>Vertreten durch die Geschäftsführer</h4>
+    <p>Tino König, Hannes Leinweber</p>
+    <h4>Kontakt</h4>
+    <p>Telefon: +49 151 18422412<br>E-Mail: handwertconsulting@gmail.com</p>
+    <h4>Registereintrag</h4>
+    <p>Die Eintragung in das Handelsregister beim Amtsgericht Wetzlar ist beantragt und derzeit noch nicht abgeschlossen. Bis zur Eintragung firmiert die Gesellschaft als „handwert GmbH (in Gründung)“. Die Handelsregisternummer (HRB) wird nach erfolgter Eintragung ergänzt.</p>
+    <h4>Umsatzsteuer-Identifikationsnummer</h4>
+    <p>Umsatzsteuer-Identifikationsnummer gemäß § 27 a Umsatzsteuergesetz: wird nach Erteilung durch das Finanzamt ergänzt.</p>
+    <h4>Verantwortlich für den Inhalt nach § 18 Abs. 2 MStV</h4>
+    <p>Tino König, Hannes Leinweber, Anschrift wie oben.</p>
+    <h4>Betrieb &amp; Zweck der Anwendung</h4>
+    <p>Diese Anwendung („BelegAssistent“) wurde von der handwert GmbH entwickelt und technisch bereitgestellt. Sie dient ausschließlich der internen Nutzung durch berechtigte Mitarbeitende der Energetics Bau GmbH, An der Automeile 24, 35394 Gießen.</p>
+    <h4>Online-Streitbeilegung (OS-Plattform)</h4>
+    <p>Die Europäische Kommission stellt eine Plattform zur Online-Streitbeilegung bereit: <a href="https://ec.europa.eu/consumers/odr/" target="_blank" rel="noopener noreferrer">https://ec.europa.eu/consumers/odr/</a>. Wir sind nicht bereit oder verpflichtet, an Streitbeilegungsverfahren vor einer Verbraucherschlichtungsstelle teilzunehmen.</p>
+    <h4>Urheberrecht</h4>
+    <p>Diese Anwendung einschließlich ihres Quellcodes, Designs und ihrer Inhalte ist Eigentum der handwert GmbH und urheberrechtlich geschützt.</p>
+    <button class="lg-close" onclick="lgClose('impressum')">Schließen</button>
+  </div>
+</div>
+
+<div class="lg-overlay" id="lg-datenschutz" onclick="if(event.target===this)lgClose('datenschutz')">
+  <div class="lg-card">
+    <h2>Datenschutzerklärung</h2>
+    <h4>1. Verantwortliche Stelle und Auftragsverarbeitung</h4>
+    <p>Verantwortliche im Sinne von Art. 4 Nr. 7 DSGVO ist die Energetics Bau GmbH, An der Automeile 24, 35394 Gießen, als Arbeitgeberin der Nutzenden. Die handwert GmbH, Naunheimer Straße 8, 35576 Wetzlar (E-Mail: handwertconsulting@gmail.com), hat diese Anwendung entwickelt und stellt sie als Auftragsverarbeiterin gemäß Art. 28 DSGVO bereit.</p>
+    <h4>2. Lokale Verarbeitung – keine Serverübertragung</h4>
+    <p>Der BelegAssistent verarbeitet alle Eingaben (Belegdaten, Firmen, Anlässe, Personen, Beträge) sowie die Texterkennung (OCR) <b>ausschließlich lokal in Ihrem Browser</b>. Die Daten werden im lokalen Speicher (localStorage) Ihres Geräts abgelegt und <b>nicht an einen Server der handwert GmbH übertragen</b>. Es gibt keine Nutzerkonten, kein Tracking, keine Analyse und keine Werbung.</p>
+    <h4>3. Texterkennung (OCR)</h4>
+    <p>Die optische Zeichenerkennung erfolgt vollständig im Browser mittels der Bibliothek Tesseract.js. Hochgeladene bzw. fotografierte Belege verlassen Ihr Gerät dabei nicht.</p>
+    <h4>4. Eingebundene Drittdienste (CDN)</h4>
+    <p>Die Anwendung lädt Programmbibliotheken (React, Babel, Tesseract.js) über die Content-Delivery-Netzwerke unpkg und jsDelivr/Cloudflare. Dabei wird technisch bedingt Ihre IP-Adresse an den jeweiligen Anbieter übermittelt (Art. 6 Abs. 1 lit. f DSGVO). Die Auslieferung/das Hosting erfolgt über Vercel Inc. Eine etwaige Drittlandübermittlung (USA) erfolgt auf Grundlage von EU-Standardvertragsklauseln (Art. 46 DSGVO).</p>
+    <h4>5. Rechtsgrundlage &amp; lokaler Speicher</h4>
+    <p>Rechtsgrundlage ist die Durchführung des Beschäftigungsverhältnisses (Art. 6 Abs. 1 lit. b DSGVO i. V. m. § 26 Abs. 1 BDSG). Der lokale Speicher ist technisch notwendig und gemäß § 25 Abs. 2 Nr. 2 TDDDG einwilligungsfrei.</p>
+    <h4>6. Ihre Rechte</h4>
+    <p>Sie haben das Recht auf Auskunft (Art. 15), Berichtigung (Art. 16), Löschung (Art. 17), Einschränkung (Art. 18), Datenübertragbarkeit (Art. 20) und Widerspruch (Art. 21 DSGVO). Lokal gespeicherte Daten können Sie jederzeit selbst löschen (Browser-Daten/„localStorage“ leeren). Beschwerderecht besteht bei der zuständigen Aufsichtsbehörde: Der Hessische Beauftragte für Datenschutz und Informationsfreiheit (HBDI), Postfach 3163, 65021 Wiesbaden.</p>
+    <button class="lg-close" onclick="lgClose('datenschutz')">Schließen</button>
+  </div>
+</div>
+
+<script>
+  document.getElementById('lgYear').textContent = new Date().getFullYear();
+  function lgOpen(w){ document.getElementById('lg-' + w).classList.add('open'); }
+  function lgClose(w){ document.getElementById('lg-' + w).classList.remove('open'); }
+</script>
 </body>
 </html>
