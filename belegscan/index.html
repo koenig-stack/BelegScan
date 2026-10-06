@@ -18,37 +18,291 @@
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Source+Sans+3:wght@300;400;500;600&display=swap" rel="stylesheet" />
 
   <style>
+    /* Werkbank-Design: monochrom Schwarz/Weiß, Haarlinien statt Schatten,
+       Karten 24px, Felder 18px, Knöpfe als Pille (Liquid Carve Button). */
+    :root {
+      --color-bg: #f5f5f5;
+      --color-card: #ffffff;
+      --color-inset: #fafafa;
+      --color-ink: #0a0a0a;
+      --color-muted: #737373;
+      --color-faint: #8a8a8a;
+      --color-line: #e5e5e5;
+      --color-line-strong: #d4d4d4;
+      --color-accent: #0a0a0a;
+      --color-accent-fg: #fafafa;
+      --color-warn: #c8000a;
+    }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body, #root { min-height: 100vh; }
-    body { background: #faf8f2; font-family: 'Source Sans 3', system-ui, sans-serif; }
+    body { background: var(--color-bg); color: var(--color-ink); font-family: 'Source Sans 3', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
     select, input, textarea, button { font-family: inherit; }
+    :focus-visible { outline: 2px solid var(--color-ink); outline-offset: 2px; }
 
     @keyframes spin  { to { transform: rotate(360deg); } }
     @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.5; } }
-    .spinner { width:16px; height:16px; border:2.5px solid rgba(255,255,255,.3); border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; display:inline-block; flex-shrink:0; }
+    .spinner { width:16px; height:16px; border:2.5px solid rgba(250,250,250,.3); border-top-color:#fafafa; border-radius:50%; animation:spin .7s linear infinite; display:inline-block; flex-shrink:0; }
 
-    .progress-bar-wrap { background:rgba(255,255,255,.2); border-radius:10px; height:6px; width:100%; margin-top:6px; overflow:hidden; }
-    .progress-bar-fill { height:100%; background:#f0b535; border-radius:10px; transition:width .3s ease; }
+    .progress-bar-wrap { background:rgba(250,250,250,.2); border-radius:999px; height:6px; width:100%; margin-top:6px; overflow:hidden; }
+    .progress-bar-fill { height:100%; background:#fafafa; border-radius:999px; transition:width .3s ease; }
+
+    /* Knöpfe: Grundform (Pille, Haarlinie); Fläche zeichnet der LiquidButton */
+    .wb-btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:44px; padding:0 20px; border:1px solid var(--color-line); border-radius:999px; font-size:14px; font-weight:600; line-height:1.2; color:var(--color-ink); cursor:pointer; transition:border-color .15s; }
+    .wb-btn--primary { color:var(--color-accent-fg); }
+    .wb-btn--sm { min-height:36px; padding:0 14px; font-size:13px; }
+    .wb-btn--full { width:100%; }
+    .wb-btn:disabled { opacity:.4; cursor:not-allowed; }
+
+    /* ── Liquid Carve Button (wie im Kostenrechner) ─────────────────────────────
+       Die Flaeche zeichnet das SVG der Komponente LiquidButton: --lb-fill ist die
+       Knopffarbe, --lb-blob die Farbe, die unter dem „ausgeschnittenen" Blob beim
+       Hover sichtbar wird. Der Rahmen bleibt CSS. */
+    .lb {
+      position: relative; isolation: isolate; background: transparent !important;
+      overflow: visible; -webkit-tap-highlight-color: transparent;
+      --lb-fill: var(--color-card); --lb-blob: var(--color-line);
+    }
+    .lb-svg { position: absolute; inset: 0; overflow: visible; z-index: 0; pointer-events: none; }
+    .lb-fill { fill: var(--lb-fill); }
+    .lb-blob { fill: var(--lb-blob); }
+    .lb-label {
+      position: relative; z-index: 1; display: inline-flex; align-items: center;
+      justify-content: inherit; gap: inherit; pointer-events: none;
+    }
+    .wb-btn.lb { --lb-fill: var(--color-card); --lb-blob: var(--color-bg); border-color: var(--color-line); }
+    .wb-btn.lb:hover { border-color: var(--color-line-strong); }
+    .wb-btn--primary.lb { --lb-fill: var(--color-accent); --lb-blob: #525252; border-color: transparent; }
+    .dark .wb-btn--primary.lb { --lb-blob: #d4d4d4; }
+    .wb-btn--ghost.lb { --lb-fill: transparent; --lb-blob: var(--color-inset); border-color: transparent; }
+    .dark .wb-btn.lb:not(.wb-btn--primary) { --lb-blob: var(--color-inset); }
+    .lb-svg filter { color-interpolation-filters: sRGB; }
   </style>
 </head>
 <body>
 <div id="root"></div>
 
 <script type="text/babel">
-const { useState, useRef } = React;
+const { useState, useRef, useEffect, useLayoutEffect, useId, forwardRef } = React;
 
 /* ── TOKENS ─────────────────────────────────── */
+// Werkbank-Design: monochrom. Tinte #0a0a0a ist zugleich Akzent (vorher Navy/Bernstein).
 const C = {
-  navy:"#152741", navyMid:"#1d3a5e", navyLight:"#284f80",
-  amber:"#c4780c", amberBri:"#e8920a", gold:"#f0b535",
-  cream:"#faf8f2", paper:"#f3f0e8", white:"#ffffff",
-  border:"#d9d2c2", borderFocus:"#2a4f80",
-  muted:"#7a7060", textSub:"#4a4232", text:"#1a1510",
-  danger:"#b03020", success:"#2a5e3a",
+  bg:"#f5f5f5", card:"#ffffff", inset:"#fafafa",
+  ink:"#0a0a0a", muted:"#737373", faint:"#8a8a8a",
+  line:"#e5e5e5", lineStrong:"#d4d4d4",
+  accent:"#0a0a0a", accentFg:"#fafafa",
+  warn:"#c8000a",
 };
 const FD = "'Playfair Display', Georgia, serif";
 const FB = "'Source Sans 3', system-ui, sans-serif";
 const SK = "belege-v7";
+
+/* ── LIQUID CARVE BUTTON ─────────────────────── */
+// Liquid Carve Button – Gestaltung wie im Kostenrechner (koenig-stack/Kostenrechner,
+// src/LiquidButton.tsx), nach Originkit „Liquid Carve Button“. Diese Fassung kommt
+// ohne framer-motion aus (eigene Tween-Funktion), damit die Apps der Werkbank keine
+// zusätzliche Abhängigkeit brauchen. Hier ohne TypeScript-Typen, weil Babel im
+// Browser nur JSX übersetzt; Logik unverändert.
+// Echtes <button>-Element, Farben über CSS-Variablen (--lb-fill, --lb-blob);
+// die Animationsschleife läuft nur während Hover und Ausblenden.
+const FOLLOW_TAU_MIN = 0.02;
+const FOLLOW_TAU_MAX = 0.4;
+const SQUASH_TAU = 0.09;
+const SQUASH_PER_PX_PER_SEC = 0.0011;
+const SQUASH_MAX = 1.6;
+const DAUER_MS = 800;
+
+/** cubic-bezier(0.44, 0, 0.56, 1) – wie die Vorlage */
+function easing(t) {
+  const x1 = 0.44, y1 = 0, x2 = 0.56, y2 = 1;
+  const bx = (u) => 3 * x1 * u * (1 - u) ** 2 + 3 * x2 * u * u * (1 - u) + u ** 3;
+  const by = (u) => 3 * y1 * u * (1 - u) ** 2 + 3 * y2 * u * u * (1 - u) + u ** 3;
+  let lo = 0, hi = 1, u = t;
+  for (let i = 0; i < 20; i++) {
+    u = (lo + hi) / 2;
+    if (bx(u) < t) lo = u; else hi = u;
+  }
+  return by(u);
+}
+
+function useReducedMotion() {
+  const [r, setR] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setR(mq.matches);
+    const h = () => setR(mq.matches);
+    mq.addEventListener("change", h);
+    return () => mq.removeEventListener("change", h);
+  }, []);
+  return r;
+}
+
+// Props: rounded = Eckenradius in % der halben kürzeren Seite (100 = Pille),
+// blobScale = Blobdurchmesser relativ zur Buttonhöhe, smoothness = 0–100 Trägheit.
+const LiquidButton = forwardRef(function LiquidButton(
+  { rounded = 100, blobScale = 0.8, smoothness = 55, className, children, onPointerEnter, onPointerMove, onPointerLeave, type = "button", ...rest },
+  forwardedRef,
+) {
+  const rootRef = useRef(null);
+  const followRef = useRef(null);
+  const squashRef = useRef(null);
+  const biteRef = useRef(null);
+  const reducedMotion = useReducedMotion();
+  const [box, setBox] = useState({ w: 0, h: 0 });
+
+  const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const filterId = `lb-goo-${uid}`;
+  const maskId = `lb-bite-${uid}`;
+
+  const st = useRef({ x: 0, y: 0, tx: 0, ty: 0, squash: 1, angle: 0, hovered: false, raf: 0, last: 0, scale: 0, tween: 0 });
+  const live = useRef({ smoothness });
+  live.current = { smoothness };
+
+  useLayoutEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const read = () => setBox((p) => (p.w === el.offsetWidth && p.h === el.offsetHeight ? p : { w: el.offsetWidth, h: el.offsetHeight }));
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const s = st.current;
+    return () => {
+      cancelAnimationFrame(s.raf);
+      cancelAnimationFrame(s.tween);
+    };
+  }, []);
+
+  const rad = (Math.min(box.w, box.h) / 2) * (Math.max(0, Math.min(100, rounded)) / 100);
+  const blob = Math.max(8, Math.round(box.h * blobScale));
+  // Goo-Stärke an die Buttongröße koppeln, damit kleine Buttons ihre Form behalten
+  const goo = Math.max(2, Math.min(8, Math.min(box.w, box.h) / 6));
+
+  const tick = (now) => {
+    const s = st.current;
+    const dt = s.last ? Math.min(0.05, (now - s.last) / 1000) : 1 / 60;
+    s.last = now;
+    const t = Math.max(0, Math.min(100, Math.round(live.current.smoothness))) / 100;
+    const tau = FOLLOW_TAU_MIN + t * (FOLLOW_TAU_MAX - FOLLOW_TAU_MIN);
+    const k = 1 - Math.exp(-dt / tau);
+    const dx = (s.tx - s.x) * k;
+    const dy = (s.ty - s.y) * k;
+    s.x += dx;
+    s.y += dy;
+    const speed = Math.hypot(dx, dy) / dt;
+    const want = Math.min(SQUASH_MAX, 1 + speed * SQUASH_PER_PX_PER_SEC);
+    s.squash += (want - s.squash) * (1 - Math.exp(-dt / SQUASH_TAU));
+    if (speed > 8) s.angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+    if (followRef.current) followRef.current.style.transform = `translate(${s.x}px, ${s.y}px)`;
+    if (squashRef.current) squashRef.current.style.transform = `rotate(${s.angle}deg) scale(${s.squash}, ${1 / s.squash})`;
+    // Schleife beenden, sobald nicht mehr gehovert und der Blob verschwunden ist
+    if (!s.hovered && s.scale <= 0.001) {
+      s.raf = 0;
+      s.last = 0;
+      return;
+    }
+    s.raf = requestAnimationFrame(tick);
+  };
+  const startLoop = () => {
+    if (!st.current.raf) st.current.raf = requestAnimationFrame(tick);
+  };
+
+  const offset = (e) => {
+    const r = rootRef.current?.getBoundingClientRect();
+    return r ? { dx: e.clientX - (r.left + r.width / 2), dy: e.clientY - (r.top + r.height / 2) } : null;
+  };
+
+  const animateBite = (to) => {
+    const el = biteRef.current;
+    if (!el) return;
+    const s = st.current;
+    cancelAnimationFrame(s.tween);
+    const von = s.scale;
+    const start = performance.now();
+    const schritt = (now) => {
+      const p = Math.min(1, (now - start) / DAUER_MS);
+      s.scale = von + (to - von) * easing(p);
+      el.style.transform = `scale(${Math.max(0, s.scale)})`;
+      s.tween = p < 1 ? requestAnimationFrame(schritt) : 0;
+    };
+    s.tween = requestAnimationFrame(schritt);
+  };
+
+  const enter = (e) => {
+    onPointerEnter?.(e);
+    if (reducedMotion || rest.disabled) return;
+    const o = offset(e);
+    const s = st.current;
+    s.hovered = true;
+    if (o) {
+      s.tx = s.x = o.dx;
+      s.ty = s.y = o.dy;
+      if (followRef.current) followRef.current.style.transform = `translate(${o.dx}px, ${o.dy}px)`;
+    }
+    startLoop();
+    animateBite(1);
+  };
+  const move = (e) => {
+    onPointerMove?.(e);
+    if (!st.current.hovered) return;
+    const o = offset(e);
+    if (o) {
+      st.current.tx = o.dx;
+      st.current.ty = o.dy;
+    }
+  };
+  const leave = (e) => {
+    onPointerLeave?.(e);
+    if (!st.current.hovered) return;
+    st.current.hovered = false;
+    animateBite(0);
+  };
+
+  return (
+    <button
+      {...rest}
+      type={type}
+      ref={(el) => {
+        rootRef.current = el;
+        if (typeof forwardedRef === "function") forwardedRef(el);
+        else if (forwardedRef) forwardedRef.current = el;
+      }}
+      className={`lb ${className ?? ""}`}
+      onPointerEnter={enter}
+      onPointerMove={move}
+      onPointerLeave={leave}
+    >
+      <svg aria-hidden className="lb-svg" width="100%" height="100%">
+        <defs>
+          <filter id={filterId}>
+            <feGaussianBlur in="SourceGraphic" stdDeviation={goo} result="blur" />
+            <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 19 -9" />
+          </filter>
+          <mask id={maskId}>
+            <rect x="0" y="0" width="100%" height="100%" fill="#fff" />
+            <g ref={followRef} style={{ transformBox: "fill-box", transformOrigin: "center" }}>
+              <g ref={squashRef} style={{ transformBox: "fill-box", transformOrigin: "center" }}>
+                <g ref={biteRef} style={{ transformBox: "fill-box", transformOrigin: "center", transform: "scale(0)" }}>
+                  <circle cx="50%" cy="50%" r={blob / 2} fill="#000" />
+                </g>
+              </g>
+            </g>
+          </mask>
+        </defs>
+        <g filter={`url(#${filterId})`}>
+          <rect className="lb-blob" x="0" y="0" width="100%" height="100%" rx={rad} ry={rad} />
+        </g>
+        <g filter={`url(#${filterId})`}>
+          <rect className="lb-fill" x="0" y="0" width="100%" height="100%" rx={rad} ry={rad} mask={`url(#${maskId})`} />
+        </g>
+      </svg>
+      <span className="lb-label">{children}</span>
+    </button>
+  );
+});
 
 const DEFAULTS = {
   firmen:        ["Planungsbüro Giessen GmbH","Architekturbüro Meier & Partner","Bauservice Müller GmbH","King Capital Holding UG"],
@@ -179,10 +433,10 @@ ${mwstBlock(mwst)}
 <div class="footer"><div class="sig"><div class="lbl">Ort, Datum</div><div class="val">${d.signOrt}, ${d.datum}</div></div><div class="sig"><div class="lbl">Unterschrift des Gastgebers</div><div class="sig-line"></div></div></div>`;
 
 /* ── SHARED UI ────────────────────────────────── */
-const IS=(f)=>({width:"100%",padding:"10px 13px",border:`1.5px solid ${f?C.borderFocus:C.border}`,borderRadius:7,fontSize:14,color:C.text,background:C.white,outline:"none",transition:"border-color .15s",boxShadow:f?"0 0 0 3px rgba(40,79,128,.1)":"none"});
-const CHV=`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%231d3a5e' d='M5 7L0 2h10z'/%3E%3C/svg%3E")`;
+const IS=(f)=>({width:"100%",padding:"10px 14px",border:`1px solid ${f?C.ink:C.line}`,borderRadius:18,fontSize:14,color:C.ink,background:C.card,outline:"none",transition:"border-color .15s",boxShadow:f?"0 0 0 3px rgba(10,10,10,.08)":"none"});
+const CHV=`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%230a0a0a' d='M5 7L0 2h10z'/%3E%3C/svg%3E")`;
 
-function Lbl({text,req}){return <label style={{display:"block",fontSize:11,fontWeight:600,letterSpacing:".7px",textTransform:"uppercase",color:C.navyMid,marginBottom:5}}>{text}{req&&<span style={{color:C.amberBri,marginLeft:3}}>*</span>}</label>}
+function Lbl({text,req}){return <label style={{display:"block",fontSize:11,fontWeight:600,letterSpacing:".7px",textTransform:"uppercase",color:C.muted,marginBottom:5}}>{text}{req&&<span style={{color:C.ink,marginLeft:3}}>*</span>}</label>}
 function F({label,req,style,children}){return <div style={{marginBottom:18,flex:"1 1 240px",...style}}><Lbl text={label} req={req}/>{children}</div>}
 function FF({label,req,children}){return <div style={{marginBottom:18}}><Lbl text={label} req={req}/>{children}</div>}
 function Row({children}){return <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>{children}</div>}
@@ -193,25 +447,28 @@ function Sel({value,onChange,options,placeholder}){
   const[f,sf]=useState(false);const[cust,sc]=useState(false);const[cv,scv]=useState("");
   if(cust)return <div style={{display:"flex",gap:8}}>
     <input autoFocus value={cv} onChange={e=>scv(e.target.value)} placeholder="Eigenen Wert eingeben …" onKeyDown={e=>{if(e.key==="Enter"){onChange(cv);sc(false);scv("");}}} style={{...IS(true),flex:1}}/>
-    <button onClick={()=>{onChange(cv);sc(false);scv("");}} style={{padding:"0 14px",background:C.amber,color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontWeight:600}}>OK</button>
-    <button onClick={()=>{sc(false);scv("");}} style={{padding:"0 10px",background:C.paper,color:C.muted,border:`1.5px solid ${C.border}`,borderRadius:7,cursor:"pointer"}}>✕</button>
+    <LiquidButton type="submit" className="wb-btn wb-btn--primary" onClick={()=>{onChange(cv);sc(false);scv("");}}>OK</LiquidButton>
+    <LiquidButton type="submit" className="wb-btn" aria-label="Abbrechen" style={{padding:"0 14px",color:C.muted}} onClick={()=>{sc(false);scv("");}}>✕</LiquidButton>
   </div>;
-  return <select value={value} onChange={e=>{if(e.target.value==="__c__")sc(true);else onChange(e.target.value);}} style={{...IS(f),appearance:"none",WebkitAppearance:"none",cursor:"pointer",paddingRight:36,backgroundImage:CHV,backgroundRepeat:"no-repeat",backgroundPosition:"right 12px center"}} onFocus={()=>sf(true)} onBlur={()=>sf(false)}>
+  return <select value={value} onChange={e=>{if(e.target.value==="__c__")sc(true);else onChange(e.target.value);}} style={{...IS(f),appearance:"none",WebkitAppearance:"none",cursor:"pointer",paddingRight:36,backgroundImage:CHV,backgroundRepeat:"no-repeat",backgroundPosition:"right 14px center"}} onFocus={()=>sf(true)} onBlur={()=>sf(false)}>
     <option value="" disabled>{placeholder||"Bitte auswählen …"}</option>
     {options.map(o=><option key={o} value={o}>{o}</option>)}
     <option value="__c__">✏️ Eigene Eingabe …</option>
   </select>;
 }
 
+// Auswahl-Pillen: gewählt = schwarz gefüllt, sonst weiß mit Haarlinie
+function Pill({on,onClick,children,style}){return <LiquidButton type="submit" onClick={onClick} aria-pressed={on} className={`wb-btn wb-btn--sm${on?" wb-btn--primary":""}`} style={{fontWeight:on?600:400,...style}}>{children}</LiquidButton>}
+
 function ZahlPicker({value,onChange}){return <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
   {[["Kartenzahlung","💳"],["Barzahlung","💵"],["Privat","🏠"]].map(([k,ic])=>(
-    <button key={k} onClick={()=>onChange(k)} style={{padding:"9px 15px",borderRadius:20,cursor:"pointer",fontSize:13.5,border:value===k?"none":`1.5px solid ${C.border}`,background:value===k?C.navyMid:C.white,color:value===k?"#fff":C.textSub,fontWeight:value===k?600:400,boxShadow:value===k?"0 2px 8px rgba(21,39,65,.3)":"none",transition:"all .15s"}}>{ic} {k}</button>
+    <Pill key={k} on={value===k} onClick={()=>onChange(k)} style={{fontSize:13.5}}>{ic} {k}</Pill>
   ))}
 </div>}
 
 function MwStPicker({satz,onChange}){return <div style={{display:"flex",gap:8}}>
   {[0,7,19].map(s=>(
-    <button key={s} onClick={()=>onChange(s)} style={{padding:"9px 22px",borderRadius:20,cursor:"pointer",fontSize:14,fontWeight:600,border:satz===s?"none":`1.5px solid ${C.border}`,background:satz===s?C.navyMid:C.white,color:satz===s?"#fff":C.textSub,boxShadow:satz===s?"0 2px 8px rgba(21,39,65,.3)":"none",transition:"all .15s"}}>{s} %</button>
+    <Pill key={s} on={satz===s} onClick={()=>onChange(s)} style={{fontSize:14,fontWeight:600,padding:"0 22px"}}>{s} %</Pill>
   ))}
 </div>}
 
@@ -219,17 +476,17 @@ function MwStCalc({brutto,satz}){
   const b=parseAmt(brutto);
   const netto=satz>0?b/(1+satz/100):b;
   const mwstB=b-netto;
-  if(b===0)return <div style={{padding:"14px 16px",background:C.paper,borderRadius:8,border:`1.5px solid ${C.border}`,color:C.muted,fontSize:13,textAlign:"center"}}>Rechnungsbetrag eingeben für Berechnung</div>;
-  return <div style={{background:C.white,border:`1.5px solid ${C.border}`,borderRadius:8,overflow:"hidden"}}>
-    <div style={{background:C.navyMid,padding:"8px 14px",display:"flex",alignItems:"center",gap:10}}>
-      <span style={{background:C.gold,color:C.navy,padding:"2px 10px",borderRadius:20,fontSize:11,fontWeight:700}}>MwSt {satz} %</span>
-      <span style={{color:"rgba(255,255,255,.65)",fontSize:12}}>Steueraufschlüsselung</span>
+  if(b===0)return <div style={{padding:"14px 16px",background:C.inset,borderRadius:18,border:`1px solid ${C.line}`,color:C.muted,fontSize:13,textAlign:"center"}}>Rechnungsbetrag eingeben für Berechnung</div>;
+  return <div style={{background:C.card,border:`1px solid ${C.line}`,borderRadius:24,overflow:"hidden"}}>
+    <div style={{background:C.inset,borderBottom:`1px solid ${C.line}`,padding:"10px 16px",display:"flex",alignItems:"center",gap:10}}>
+      <span style={{background:C.ink,color:C.accentFg,padding:"2px 10px",borderRadius:999,fontSize:11,fontWeight:700}}>MwSt {satz} %</span>
+      <span style={{color:C.muted,fontSize:12}}>Steueraufschlüsselung</span>
     </div>
     <div style={{display:"flex"}}>
-      {[["Nettobetrag",netto,""],["MwSt-Betrag",mwstB,C.amber],["Bruttobetrag",b,C.navyLight]].map(([lbl,val,col],i)=>(
-        <div key={lbl} style={{flex:1,padding:"12px 14px",borderRight:i<2?`1px solid ${C.border}`:"none"}}>
+      {[["Nettobetrag",netto],["MwSt-Betrag",mwstB],["Bruttobetrag",b]].map(([lbl,val],i)=>(
+        <div key={lbl} style={{flex:1,padding:"12px 16px",borderRight:i<2?`1px solid ${C.line}`:"none"}}>
           <div style={{fontSize:10,fontWeight:600,letterSpacing:".5px",textTransform:"uppercase",color:C.muted,marginBottom:4}}>{lbl}</div>
-          <div style={{fontSize:17,fontWeight:700,color:col||C.text}}>EUR {fmtNum(val)}</div>
+          <div style={{fontSize:17,fontWeight:i===2?700:600,color:C.ink}}>EUR {fmtNum(val)}</div>
         </div>
       ))}
     </div>
@@ -241,16 +498,16 @@ function MultiPerson({persons,onChange,options}){
   const add=(n)=>{if(n&&!persons.includes(n))onChange([...persons,n]);scv("");sc(false);};
   return <div>
     {persons.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:10}}>
-      {persons.map((p,i)=><span key={i} style={{background:C.navyMid,color:"#fff",padding:"5px 12px 5px 14px",borderRadius:20,fontSize:13,display:"flex",alignItems:"center",gap:8}}>{p}
-        <button onClick={()=>onChange(persons.filter((_,j)=>j!==i))} style={{background:"none",border:"none",color:"rgba(255,255,255,.7)",cursor:"pointer",padding:0,fontSize:15,lineHeight:1}}>×</button>
+      {persons.map((p,i)=><span key={i} style={{background:C.ink,color:C.accentFg,padding:"5px 12px 5px 14px",borderRadius:999,fontSize:13,display:"flex",alignItems:"center",gap:8}}>{p}
+        <button onClick={()=>onChange(persons.filter((_,j)=>j!==i))} aria-label="Entfernen" style={{background:"none",border:"none",color:"rgba(250,250,250,.7)",cursor:"pointer",padding:0,fontSize:15,lineHeight:1}}>×</button>
       </span>)}
     </div>}
     {cust?<div style={{display:"flex",gap:8}}>
       <input autoFocus value={cv} onChange={e=>scv(e.target.value)} placeholder="Name, Funktion …" onKeyDown={e=>{if(e.key==="Enter")add(cv);}} style={{...IS(true),flex:1}}/>
-      <button onClick={()=>add(cv)} style={{padding:"0 14px",background:C.amber,color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontWeight:700,fontSize:17}}>+</button>
-      <button onClick={()=>{sc(false);scv("");}} style={{padding:"0 10px",background:C.paper,color:C.muted,border:`1.5px solid ${C.border}`,borderRadius:7,cursor:"pointer"}}>✕</button>
+      <LiquidButton type="submit" className="wb-btn wb-btn--primary" aria-label="Hinzufügen" style={{padding:"0 16px",fontSize:17,fontWeight:700}} onClick={()=>add(cv)}>+</LiquidButton>
+      <LiquidButton type="submit" className="wb-btn" aria-label="Abbrechen" style={{padding:"0 14px",color:C.muted}} onClick={()=>{sc(false);scv("");}}>✕</LiquidButton>
     </div>:
-    <select value="" onChange={e=>{if(e.target.value==="__c__")sc(true);else if(e.target.value)add(e.target.value);}} style={{...IS(false),appearance:"none",WebkitAppearance:"none",cursor:"pointer",paddingRight:36,backgroundImage:CHV,backgroundRepeat:"no-repeat",backgroundPosition:"right 12px center"}}>
+    <select value="" onChange={e=>{if(e.target.value==="__c__")sc(true);else if(e.target.value)add(e.target.value);}} style={{...IS(false),appearance:"none",WebkitAppearance:"none",cursor:"pointer",paddingRight:36,backgroundImage:CHV,backgroundRepeat:"no-repeat",backgroundPosition:"right 14px center"}}>
       <option value="">Person hinzufügen …</option>
       {options.filter(o=>!persons.includes(o)).map(o=><option key={o} value={o}>{o}</option>)}
       <option value="__c__">✏️ Eigene Eingabe …</option>
@@ -299,24 +556,25 @@ function ImgUpload({imgUrl, onChange, onScanResult}){
 
     {imgUrl ? <div>
       <div style={{position:"relative",display:"inline-block",marginBottom:10}}>
-        <img src={imgUrl} alt="Beleg" style={{maxHeight:170,maxWidth:"100%",borderRadius:8,border:`2px solid ${C.border}`,display:"block"}}/>
-        <button onClick={()=>{onChange(null);se("");sok(false);ss(false);}} style={{position:"absolute",top:-8,right:-8,background:C.danger,color:"#fff",border:"none",borderRadius:"50%",width:24,height:24,cursor:"pointer",fontWeight:700,fontSize:13}}>×</button>
+        <img src={imgUrl} alt="Beleg" style={{maxHeight:170,maxWidth:"100%",borderRadius:10,border:`1px solid ${C.line}`,display:"block"}}/>
+        {/* Löschen darf rot sein (Fehler/Löschen, keine Markenfarbe) */}
+        <button onClick={()=>{onChange(null);se("");sok(false);ss(false);}} aria-label="Bild entfernen" style={{position:"absolute",top:-8,right:-8,background:C.warn,color:"#fff",border:"none",borderRadius:"50%",width:24,height:24,cursor:"pointer",fontWeight:700,fontSize:13}}>×</button>
       </div>
 
       {/* Scan-Button */}
       {!scanning && !scanOk && (
-        <button onClick={doScan} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 20px",background:`linear-gradient(135deg,${C.navyMid},${C.navyLight})`,color:"#fff",border:"none",borderRadius:8,fontSize:14,fontWeight:600,cursor:"pointer",boxShadow:"0 2px 10px rgba(21,39,65,.25)",marginBottom:8}}>
+        <LiquidButton type="submit" onClick={doScan} className="wb-btn wb-btn--primary" style={{display:"flex",gap:10,marginBottom:8}}>
           <span style={{fontSize:18}}>🔍</span>
           Beleg automatisch auslesen
-        </button>
+        </LiquidButton>
       )}
 
       {/* Fortschrittsanzeige */}
       {scanning && (
-        <div style={{background:C.navyMid,borderRadius:9,padding:"12px 16px",marginBottom:8}}>
+        <div style={{background:C.ink,borderRadius:18,padding:"12px 16px",marginBottom:8}}>
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
             <span className="spinner"/>
-            <span style={{color:"#fff",fontSize:13,fontWeight:500}}>{status}</span>
+            <span style={{color:C.accentFg,fontSize:13,fontWeight:500}}>{status}</span>
           </div>
           <div className="progress-bar-wrap">
             <div className="progress-bar-fill" style={{width:`${progress}%`}}/>
@@ -326,112 +584,114 @@ function ImgUpload({imgUrl, onChange, onScanResult}){
 
       {/* Erfolgsmeldung */}
       {scanOk && (
-        <div style={{background:"#f0fdf4",border:"1.5px solid #86efac",borderRadius:8,padding:"10px 14px",marginBottom:8,display:"flex",alignItems:"center",gap:8}}>
+        <div style={{background:C.inset,border:`1px solid ${C.line}`,borderRadius:18,padding:"10px 14px",marginBottom:8,display:"flex",alignItems:"center",gap:8}}>
           <span style={{fontSize:18}}>✅</span>
           <div>
-            <div style={{color:C.success,fontWeight:600,fontSize:13}}>Felder wurden automatisch befüllt!</div>
+            <div style={{color:C.ink,fontWeight:600,fontSize:13}}>Felder wurden automatisch befüllt!</div>
             <div style={{color:C.muted,fontSize:12,marginTop:1}}>Bitte prüfen und bei Bedarf korrigieren.</div>
           </div>
         </div>
       )}
 
       {scanErr && (
-        <div style={{background:"#fef2f2",border:"1.5px solid #fca5a5",borderRadius:8,padding:"10px 14px",marginBottom:8,color:C.danger,fontSize:13}}>{scanErr}</div>
+        <div style={{background:"rgba(200,0,10,.05)",border:"1px solid rgba(200,0,10,.3)",borderRadius:18,padding:"10px 14px",marginBottom:8,color:C.warn,fontSize:13}}>{scanErr}</div>
       )}
 
       {!scanning && (
-        <button onClick={()=>ref.current.click()} style={{padding:"6px 12px",background:C.paper,color:C.muted,border:`1.5px solid ${C.border}`,borderRadius:6,fontSize:12,cursor:"pointer"}}>Bild ersetzen</button>
+        <LiquidButton type="submit" onClick={()=>ref.current.click()} className="wb-btn wb-btn--sm" style={{fontWeight:500,fontSize:12,color:C.muted}}>Bild ersetzen</LiquidButton>
       )}
 
     </div> : (
       <div onClick={()=>ref.current.click()}
         onDrop={e=>{e.preventDefault();sd(false);handle(e.dataTransfer.files[0]);}}
         onDragOver={e=>{e.preventDefault();sd(true);}} onDragLeave={()=>sd(false)}
-        style={{border:`2px dashed ${drag?C.amberBri:C.border}`,borderRadius:10,padding:"28px 20px",textAlign:"center",cursor:"pointer",background:drag?"rgba(232,146,10,.08)":C.paper,transition:"all .15s"}}>
+        style={{border:`1px dashed ${drag?C.ink:C.lineStrong}`,borderRadius:18,padding:"28px 20px",textAlign:"center",cursor:"pointer",background:drag?C.card:C.inset,transition:"all .15s"}}>
         <div style={{fontSize:32,marginBottom:8}}>📷</div>
         <div style={{fontSize:14,color:C.muted,lineHeight:1.7}}>
           Foto / Scan hierher ziehen<br/>
-          <span style={{color:C.navyLight,fontWeight:600}}>oder klicken zum Auswählen</span>
+          <span style={{color:C.ink,fontWeight:600}}>oder klicken zum Auswählen</span>
         </div>
       </div>
     )}
   </div>;
 }
 
-const BVAR={primary:{background:`linear-gradient(135deg,${C.navyMid},${C.navyLight})`,color:"#fff",border:"none"},secondary:{background:C.white,color:C.navyMid,border:`1.5px solid ${C.border}`},success:{background:`linear-gradient(135deg,${C.success},#3a7a50)`,color:"#fff",border:"none"},amber:{background:`linear-gradient(135deg,${C.amber},${C.amberBri})`,color:"#fff",border:"none"}};
-function Btn({children,onClick,variant="primary",icon,disabled,full}){return <button onClick={onClick} disabled={disabled} style={{...BVAR[variant],padding:"11px 20px",borderRadius:8,cursor:disabled?"not-allowed":"pointer",fontSize:14,fontWeight:600,display:"inline-flex",alignItems:"center",gap:8,width:full?"100%":"auto",justifyContent:"center",opacity:disabled?.5:1,transition:"opacity .15s",boxShadow:variant==="secondary"?"none":"0 2px 10px rgba(0,0,0,.15)"}}>{icon&&<span style={{fontSize:15}}>{icon}</span>}{children}</button>}
+// Varianten: primary/amber/success → schwarz gefüllt; secondary → weiß mit Haarlinie.
+// Vorher <button> ohne type (= submit), daher type="submit" beibehalten.
+function Btn({children,onClick,variant="primary",icon,disabled,full}){
+  const cls=`wb-btn${variant==="secondary"?"":" wb-btn--primary"}${full?" wb-btn--full":""}`;
+  return <LiquidButton type="submit" onClick={onClick} disabled={disabled} className={cls}>{icon&&<span style={{fontSize:15}}>{icon}</span>}{children}</LiquidButton>;
+}
 
 function Sec({title,children}){return <div style={{marginBottom:4}}>
   <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18,marginTop:26}}>
-    <div style={{height:1,flex:1,background:C.border}}/>
-    <span style={{fontSize:10.5,fontWeight:700,letterSpacing:"1.2px",textTransform:"uppercase",color:C.navyMid,whiteSpace:"nowrap"}}>{title}</span>
-    <div style={{height:1,flex:1,background:C.border}}/>
+    <div style={{height:1,flex:1,background:C.line}}/>
+    <span style={{fontSize:10.5,fontWeight:700,letterSpacing:"1.2px",textTransform:"uppercase",color:C.muted,whiteSpace:"nowrap"}}>{title}</span>
+    <div style={{height:1,flex:1,background:C.line}}/>
   </div>
   {children}
 </div>}
 
-function SumBar({left,right}){return <div style={{background:C.navyMid,borderRadius:10,padding:"12px 16px",marginTop:8}}>
-  <div style={{color:"rgba(255,255,255,.5)",fontSize:10,letterSpacing:"1px",textTransform:"uppercase",marginBottom:4}}>Zusammenfassung</div>
+function SumBar({left,right}){return <div style={{background:C.ink,borderRadius:24,padding:"14px 20px",marginTop:8}}>
+  <div style={{color:"rgba(250,250,250,.55)",fontSize:10,letterSpacing:"1px",textTransform:"uppercase",marginBottom:4}}>Zusammenfassung</div>
   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
-    <div style={{color:"rgba(255,255,255,.8)",fontSize:13}}>{left}</div>
-    <div style={{color:C.gold,fontSize:20,fontWeight:700}}>{right}</div>
+    <div style={{color:"rgba(250,250,250,.8)",fontSize:13}}>{left}</div>
+    <div style={{color:C.accentFg,fontSize:20,fontWeight:700}}>{right}</div>
   </div>
 </div>}
 
 /* ── HERO ─────────────────────────────────────── */
-function TopBar(){return <div style={{position:"sticky",top:0,zIndex:50,background:C.white,borderBottom:`1px solid ${C.border}`,padding:"0 16px",height:52,display:"flex",alignItems:"center",gap:12}}>
-  <a href="/" style={{display:"inline-flex",alignItems:"center",gap:7,color:C.navyMid,textDecoration:"none",fontSize:13.5,fontWeight:600}}>
+// Werkbank-Zonenleiste wie im Kostenrechner: Schwarz #0a0a0a mit Weiß #fafafa,
+// Zonenname #a3a3a3 (vorher weiß mit Navy/Bernstein).
+function TopBar(){return <div style={{position:"sticky",top:0,zIndex:50,background:"#0a0a0a",color:"#fafafa",borderBottom:"1px solid rgba(250,250,250,0.12)",padding:"0 12px",height:44,display:"flex",alignItems:"center",gap:10,font:"500 13px/1 "+FB}}>
+  <a href="/" title="Zur Projektübersicht der Werkbank" style={{display:"inline-flex",alignItems:"center",gap:7,color:"#fafafa",textDecoration:"none",fontSize:13.5,fontWeight:600,padding:"4px 8px",borderRadius:10}}>
     <span style={{fontSize:17,lineHeight:1}}>←</span> Werkbank
   </a>
-  <span style={{width:1,height:20,background:C.border}}/>
-  <div style={{display:"flex",alignItems:"center",gap:9}}>
-    <svg width="22" height="22" viewBox="0 0 52 52" fill="none">
-      <rect x="10" y="22" width="32" height="24" rx="2" fill="none" stroke={C.amber} strokeWidth="2.5"/>
-      <polyline points="6,22 26,10 46,22" fill="none" stroke={C.amber} strokeWidth="2.5"/>
-      <rect x="22" y="32" width="8" height="14" rx="1" fill={C.amber}/>
-    </svg>
-    <span style={{fontFamily:FD,fontWeight:700,color:C.navy,fontSize:16}}>Belegscan</span>
-  </div>
+  <span aria-hidden="true" style={{width:1,height:16,background:"linear-gradient(180deg, transparent, rgba(250,250,250,0.26), transparent)"}}/>
+  <span style={{color:"#a3a3a3",fontWeight:400}}>Belegscan</span>
 </div>}
 
-function FHead({title,icon,sub,onBack}){return <div style={{background:`linear-gradient(135deg,${C.navy},${C.navyMid})`,padding:"18px 22px 16px"}}>
-  <button onClick={onBack} style={{background:"none",border:"none",color:"rgba(255,255,255,.65)",cursor:"pointer",fontSize:13,padding:0,display:"flex",alignItems:"center",gap:5,marginBottom:12}}>← Zurück</button>
-  <div style={{display:"flex",alignItems:"center",gap:12}}>
-    <span style={{fontSize:28}}>{icon}</span>
-    <div>
-      <h2 style={{color:"#fff",fontSize:20,fontFamily:FD,fontWeight:700,margin:0}}>{title}</h2>
-      <p style={{color:"rgba(255,255,255,.55)",fontSize:12,margin:"2px 0 0"}}>{sub}</p>
+function FHead({title,icon,sub,onBack}){return <div style={{background:C.card,borderBottom:`1px solid ${C.line}`,padding:"18px 22px 16px"}}>
+  <div style={{maxWidth:660,margin:"0 auto"}}>
+    <button onClick={onBack} style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:13,padding:0,display:"flex",alignItems:"center",gap:5,marginBottom:12}}>← Zurück</button>
+    <div style={{display:"flex",alignItems:"center",gap:12}}>
+      <span style={{fontSize:28}}>{icon}</span>
+      <div>
+        <h2 style={{color:C.ink,fontSize:20,fontFamily:FD,fontWeight:700,margin:0}}>{title}</h2>
+        <p style={{color:C.muted,fontSize:12,margin:"2px 0 0"}}>{sub}</p>
+      </div>
     </div>
   </div>
 </div>}
 
 /* ── HOME ─────────────────────────────────────── */
+// Belegtyp-Kacheln sind Karten (24px, Haarlinie); Hover nur über den Rahmen.
 function Home({setView}){return <div>
   <div style={{maxWidth:660,margin:"0 auto",padding:"28px 18px 48px"}}>
-    <h1 style={{fontFamily:FD,fontWeight:700,color:C.navy,fontSize:22,marginBottom:4}}>Beleg erfassen</h1>
+    <h1 style={{fontFamily:FD,fontWeight:700,color:C.ink,fontSize:22,marginBottom:4}}>Beleg erfassen</h1>
     <p style={{color:C.muted,fontSize:13,marginBottom:22}}>Belegtyp wählen:</p>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:15,marginBottom:18}}>
       {[["🛒","Einkaufsliste","Wareneingang · Betriebsbedarf","OCR-Scan + MwSt-Berechnung","einkauf"],
         ["🍽️","Bewirtungsbeleg","§ 4 Abs. 5 Nr. 2 EStG","OCR-Scan + MwSt-Berechnung","bewirtung"]].map(([ic,ti,su,de,vi])=>(
-        <button key={vi} onClick={()=>setView(vi)} style={{background:C.white,border:`1.5px solid ${C.border}`,borderRadius:13,padding:"22px 18px",cursor:"pointer",textAlign:"left",transition:"all .18s",boxShadow:"0 2px 10px rgba(0,0,0,.07)"}}
-          onMouseEnter={e=>{e.currentTarget.style.transform="translateY(-2px)";e.currentTarget.style.boxShadow="0 6px 22px rgba(0,0,0,.12)";e.currentTarget.style.borderColor=C.navyLight;}}
-          onMouseLeave={e=>{e.currentTarget.style.transform="none";e.currentTarget.style.boxShadow="0 2px 10px rgba(0,0,0,.07)";e.currentTarget.style.borderColor=C.border;}}>
+        <button key={vi} onClick={()=>setView(vi)} style={{background:C.card,border:`1px solid ${C.line}`,borderRadius:24,padding:"22px 18px",cursor:"pointer",textAlign:"left",transition:"border-color .15s",color:C.ink}}
+          onMouseEnter={e=>{e.currentTarget.style.borderColor=C.lineStrong;}}
+          onMouseLeave={e=>{e.currentTarget.style.borderColor=C.line;}}>
           <div style={{fontSize:32,marginBottom:9}}>{ic}</div>
-          <div style={{fontWeight:700,fontSize:15.5,color:C.navy,fontFamily:FD,marginBottom:2}}>{ti}</div>
-          <div style={{fontSize:9.5,color:C.amberBri,fontWeight:600,letterSpacing:"1px",textTransform:"uppercase",marginBottom:8}}>{su}</div>
+          <div style={{fontWeight:700,fontSize:15.5,color:C.ink,fontFamily:FD,marginBottom:2}}>{ti}</div>
+          <div style={{fontSize:9.5,color:C.muted,fontWeight:600,letterSpacing:"1px",textTransform:"uppercase",marginBottom:8}}>{su}</div>
           <div style={{fontSize:12.5,color:C.muted,lineHeight:1.5}}>{de}</div>
-          <div style={{marginTop:12,display:"flex",alignItems:"center",gap:5,color:C.navyLight,fontSize:13,fontWeight:600}}>Erfassen <span>→</span></div>
+          <div style={{marginTop:12,display:"flex",alignItems:"center",gap:5,color:C.ink,fontSize:13,fontWeight:600}}>Erfassen <span>→</span></div>
         </button>
       ))}
     </div>
-    <button onClick={()=>setView("settings")} style={{width:"100%",background:C.paper,border:`1.5px solid ${C.border}`,borderRadius:11,padding:"15px 20px",cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:13,transition:"border-color .15s"}}
-      onMouseEnter={e=>e.currentTarget.style.borderColor=C.navyLight} onMouseLeave={e=>e.currentTarget.style.borderColor=C.border}>
+    <button onClick={()=>setView("settings")} style={{width:"100%",background:C.inset,border:`1px solid ${C.line}`,borderRadius:24,padding:"15px 20px",cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:13,transition:"border-color .15s",color:C.ink}}
+      onMouseEnter={e=>e.currentTarget.style.borderColor=C.lineStrong} onMouseLeave={e=>e.currentTarget.style.borderColor=C.line}>
       <span style={{fontSize:22}}>⚙️</span>
       <div>
-        <div style={{fontWeight:600,fontSize:14.5,color:C.navy}}>Stammdaten & Dropdown-Listen</div>
+        <div style={{fontWeight:600,fontSize:14.5,color:C.ink}}>Stammdaten & Dropdown-Listen</div>
         <div style={{fontSize:12,color:C.muted,marginTop:1}}>Firmen, Orte, Personen, Anlässe konfigurieren</div>
       </div>
-      <span style={{marginLeft:"auto",color:C.navyLight,fontSize:16}}>→</span>
+      <span style={{marginLeft:"auto",color:C.ink,fontSize:16}}>→</span>
     </button>
   </div>
 </div>}
@@ -462,7 +722,7 @@ function EinkaufForm({settings,setView}){
 
   const doEx=()=>{doPrint(buildEinkauf(d,mwstObj,img));sdo(true);setTimeout(()=>sdo(false),3000);};
 
-  return <div style={{background:C.cream,minHeight:"100vh"}}>
+  return <div style={{background:C.bg,minHeight:"100vh"}}>
     <FHead title="Einkaufsliste" icon="🛒" sub="Nachweis der geschäftlichen Veranlassung" onBack={()=>setView("home")}/>
     <div style={{maxWidth:660,margin:"0 auto",padding:"6px 18px 56px"}}>
 
@@ -508,7 +768,7 @@ function EinkaufForm({settings,setView}){
         <Btn onClick={doEx} variant={done?"success":"amber"} icon={done?"✓":"🖨️"} disabled={!valid} full>{done?"PDF geöffnet – jetzt ausdrucken!":"Als PDF exportieren & drucken"}</Btn>
         <Btn onClick={()=>setView("home")} variant="secondary" full>Abbrechen</Btn>
       </div>
-      {!valid&&<p style={{textAlign:"center",color:C.danger,fontSize:12,marginTop:9}}>Bitte alle Pflichtfelder (*) ausfüllen.</p>}
+      {!valid&&<p style={{textAlign:"center",color:C.warn,fontSize:12,marginTop:9}}>Bitte alle Pflichtfelder (*) ausfüllen.</p>}
     </div>
   </div>;
 }
@@ -535,7 +795,7 @@ function BewirtungForm({settings,setView}){
 
   const doEx=()=>{doPrint(buildBewirtung(d,pers,mwstObj,img));sdo(true);setTimeout(()=>sdo(false),3000);};
 
-  return <div style={{background:C.cream,minHeight:"100vh"}}>
+  return <div style={{background:C.bg,minHeight:"100vh"}}>
     <FHead title="Bewirtungsbeleg" icon="🍽️" sub="§ 4 Abs. 5 Nr. 2 EStG – Nachweis der Bewirtungsaufwendungen" onBack={()=>setView("home")}/>
     <div style={{maxWidth:660,margin:"0 auto",padding:"6px 18px 56px"}}>
 
@@ -550,7 +810,7 @@ function BewirtungForm({settings,setView}){
 
       <Sec title="Bewirtete Personen">
         <FF label="Personen hinzufügen" req><MultiPerson persons={pers} onChange={sp} options={settings.personen}/></FF>
-        {pers.length===0&&<p style={{fontSize:12,color:C.danger,marginTop:-10}}>Mindestens eine Person erforderlich.</p>}
+        {pers.length===0&&<p style={{fontSize:12,color:C.warn,marginTop:-10}}>Mindestens eine Person erforderlich.</p>}
       </Sec>
 
       <Sec title="Beleg-Foto / Scan">
@@ -577,7 +837,7 @@ function BewirtungForm({settings,setView}){
         <Btn onClick={doEx} variant={done?"success":"amber"} icon={done?"✓":"🖨️"} disabled={!valid} full>{done?"PDF geöffnet – jetzt ausdrucken!":"Als PDF exportieren & drucken"}</Btn>
         <Btn onClick={()=>setView("home")} variant="secondary" full>Abbrechen</Btn>
       </div>
-      {!valid&&<p style={{textAlign:"center",color:C.danger,fontSize:12,marginTop:9}}>Bitte alle Pflichtfelder (*) ausfüllen.</p>}
+      {!valid&&<p style={{textAlign:"center",color:C.warn,fontSize:12,marginTop:9}}>Bitte alle Pflichtfelder (*) ausfüllen.</p>}
     </div>
   </div>;
 }
@@ -586,22 +846,22 @@ function BewirtungForm({settings,setView}){
 function ListEd({title,icon,items,onUpdate}){
   const[nv,snv]=useState("");const[f,sf]=useState(false);
   const add=()=>{const v=nv.trim();if(v&&!items.includes(v)){onUpdate([...items,v]);snv("");}};
-  return <div style={{background:C.white,borderRadius:11,padding:"16px 18px",border:`1.5px solid ${C.border}`,marginBottom:13}}>
+  return <div style={{background:C.card,borderRadius:24,padding:"16px 18px",border:`1px solid ${C.line}`,marginBottom:13}}>
     <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
       <span style={{fontSize:18}}>{icon}</span>
-      <span style={{fontSize:13.5,fontWeight:700,color:C.navy}}>{title}</span>
-      <span style={{marginLeft:"auto",background:"rgba(232,146,10,.15)",color:C.amber,padding:"1px 9px",borderRadius:20,fontSize:11,fontWeight:700}}>{items.length}</span>
+      <span style={{fontSize:13.5,fontWeight:700,color:C.ink}}>{title}</span>
+      <span style={{marginLeft:"auto",background:C.inset,border:`1px solid ${C.line}`,color:C.muted,padding:"1px 9px",borderRadius:999,fontSize:11,fontWeight:700}}>{items.length}</span>
     </div>
     <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:11}}>
       {items.length===0?<span style={{color:C.muted,fontSize:12}}>Keine Einträge</span>:items.map((it,i)=>(
-        <span key={i} style={{background:C.paper,border:`1px solid ${C.border}`,padding:"4px 10px 4px 12px",borderRadius:20,fontSize:13,display:"flex",alignItems:"center",gap:5,color:C.textSub}}>
-          {it}<button onClick={()=>onUpdate(items.filter((_,j)=>j!==i))} style={{background:"none",border:"none",color:C.muted,cursor:"pointer",padding:0,fontSize:13,lineHeight:1}}>×</button>
+        <span key={i} style={{background:C.inset,border:`1px solid ${C.line}`,padding:"4px 10px 4px 12px",borderRadius:999,fontSize:13,display:"flex",alignItems:"center",gap:5,color:C.ink}}>
+          {it}<button onClick={()=>onUpdate(items.filter((_,j)=>j!==i))} aria-label="Entfernen" style={{background:"none",border:"none",color:C.muted,cursor:"pointer",padding:0,fontSize:13,lineHeight:1}}>×</button>
         </span>
       ))}
     </div>
     <div style={{display:"flex",gap:8}}>
       <input value={nv} onChange={e=>snv(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")add();}} placeholder="Neuen Eintrag hinzufügen …" style={{...IS(f),flex:1}} onFocus={()=>sf(true)} onBlur={()=>sf(false)}/>
-      <button onClick={add} style={{padding:"0 14px",background:C.amber,color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontWeight:700,fontSize:17}}>+</button>
+      <LiquidButton type="submit" onClick={add} className="wb-btn wb-btn--primary" aria-label="Hinzufügen" style={{padding:"0 16px",fontSize:17,fontWeight:700}}>+</LiquidButton>
     </div>
   </div>;
 }
@@ -610,7 +870,7 @@ function Settings({settings,onSave,setView}){
   const[s,ss]=useState(settings);const[saved,sv]=useState(false);
   const upd=k=>v=>ss(p=>({...p,[k]:v}));
   const doSave=()=>{onSave(s);sv(true);setTimeout(()=>sv(false),2500);};
-  return <div style={{background:C.cream,minHeight:"100vh"}}>
+  return <div style={{background:C.bg,minHeight:"100vh"}}>
     <FHead title="Stammdaten & Einstellungen" icon="⚙️" sub="Dropdown-Listen konfigurieren" onBack={()=>setView("home")}/>
     <div style={{maxWidth:660,margin:"0 auto",padding:"20px 18px 56px"}}>
       <p style={{color:C.muted,fontSize:13,marginBottom:18,lineHeight:1.6}}>Einmalig konfigurieren – dauerhaft im Browser gespeichert:</p>
@@ -634,7 +894,7 @@ function App(){
   const[view,sv]=useState("home");
   const[settings,ss]=useState(loadS);
   const save=(s)=>{ss(s);saveS(s);};
-  return <div style={{fontFamily:FB,minHeight:"100vh",background:C.cream}}>
+  return <div style={{fontFamily:FB,minHeight:"100vh",background:C.bg}}>
     <TopBar/>
     {view==="home"      &&<Home setView={sv}/>}
     {view==="einkauf"   &&<EinkaufForm   settings={settings} setView={sv}/>}
@@ -644,22 +904,34 @@ function App(){
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+
+// Schließen-Knöpfe von Impressum/Datenschutz als Liquid Carve Button. Die Dialoge
+// stehen bewusst außerhalb von #root; hier bekommt nur der Knopf-Platzhalter je
+// eine eigene kleine React-Wurzel. Lädt React nicht, bleibt der schlichte Knopf.
+document.querySelectorAll(".lg-close-slot").forEach(slot=>{
+  const w=slot.getAttribute("data-close");
+  ReactDOM.createRoot(slot).render(<LiquidButton type="submit" className="wb-btn wb-btn--primary lg-close" onClick={()=>lgClose(w)}>Schließen</LiquidButton>);
+});
 </script>
 
 <!-- ── Rechtliches: Footer + Impressum/Datenschutz (§ 5 DDG, DSGVO).
      Bewusst außerhalb von #root, damit React die Knoten nicht überschreibt. ── -->
 <style>
-  .lg-footer{border-top:1px solid #d9d2c2;padding:14px 20px;text-align:center;font:400 12px/1.5 'Source Sans 3',system-ui,sans-serif;color:#7a7060;display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;justify-content:center;background:#faf8f2;}
-  .lg-footer a{color:#c4780c;text-decoration:none;}
-  .lg-overlay{position:fixed;inset:0;background:rgba(21,39,65,.45);display:none;align-items:flex-start;justify-content:center;padding:24px 16px;overflow-y:auto;z-index:9999;}
+  /* Monochrom wie die übrige Werkbank (vorher Creme/Navy/Bernstein) */
+  .lg-footer{border-top:1px solid #e5e5e5;padding:14px 20px;text-align:center;font:400 12px/1.5 'Source Sans 3',system-ui,sans-serif;color:#737373;display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;justify-content:center;background:#f5f5f5;}
+  .lg-footer a{color:#0a0a0a;text-decoration:underline;text-decoration-color:#d4d4d4;text-underline-offset:3px;}
+  .lg-footer a:hover{text-decoration-color:#0a0a0a;}
+  .lg-overlay{position:fixed;inset:0;background:rgba(10,10,10,.45);display:none;align-items:flex-start;justify-content:center;padding:24px 16px;overflow-y:auto;z-index:9999;}
   .lg-overlay.open{display:flex;}
-  .lg-card{background:#fff;border-radius:12px;max-width:640px;width:100%;padding:28px;box-shadow:0 20px 60px rgba(21,39,65,.35);font:400 13px/1.65 'Source Sans 3',system-ui,sans-serif;color:#4a4232;}
-  .lg-card h2{font:700 22px/1.2 'Playfair Display',Georgia,serif;color:#152741;margin:0 0 12px;}
-  .lg-card h4{font-size:14px;font-weight:700;color:#1a1510;margin:16px 0 4px;}
+  .lg-card{background:#fff;border:1px solid #e5e5e5;border-radius:24px;max-width:640px;width:100%;padding:28px;font:400 13px/1.65 'Source Sans 3',system-ui,sans-serif;color:#404040;}
+  .lg-card h2{font:700 22px/1.2 'Playfair Display',Georgia,serif;color:#0a0a0a;margin:0 0 12px;}
+  .lg-card h4{font-size:14px;font-weight:700;color:#0a0a0a;margin:16px 0 4px;}
   .lg-card p,.lg-card li{margin:0 0 8px;}
   .lg-card ul{padding-left:18px;}
-  .lg-card a{color:#c4780c;}
-  .lg-close{margin-top:18px;background:#152741;color:#fff;border:none;border-radius:8px;padding:10px 22px;font-weight:700;cursor:pointer;}
+  .lg-card a{color:#0a0a0a;}
+  .lg-close{margin-top:18px;background:#0a0a0a;color:#fafafa;border:none;border-radius:999px;padding:0 22px;min-height:44px;font-weight:700;cursor:pointer;}
+  .lg-close-slot{display:inline-block;margin-top:18px;}
+  .lg-close-slot .lg-close{margin-top:0;}
 </style>
 
 <footer class="lg-footer">
@@ -689,7 +961,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
     <p>Die Europäische Kommission stellt eine Plattform zur Online-Streitbeilegung bereit: <a href="https://ec.europa.eu/consumers/odr/" target="_blank" rel="noopener noreferrer">https://ec.europa.eu/consumers/odr/</a>. Wir sind nicht bereit oder verpflichtet, an Streitbeilegungsverfahren vor einer Verbraucherschlichtungsstelle teilzunehmen.</p>
     <h4>Urheberrecht</h4>
     <p>Diese Anwendung einschließlich ihres Quellcodes, Designs und ihrer Inhalte ist Eigentum der handwert GmbH und urheberrechtlich geschützt.</p>
-    <button class="lg-close" onclick="lgClose('impressum')">Schließen</button>
+    <span class="lg-close-slot" data-close="impressum"><button class="lg-close" onclick="lgClose('impressum')">Schließen</button></span>
   </div>
 </div>
 
@@ -708,7 +980,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
     <p>Rechtsgrundlage ist die Durchführung des Beschäftigungsverhältnisses (Art. 6 Abs. 1 lit. b DSGVO i. V. m. § 26 Abs. 1 BDSG). Der lokale Speicher ist technisch notwendig und gemäß § 25 Abs. 2 Nr. 2 TDDDG einwilligungsfrei.</p>
     <h4>6. Ihre Rechte</h4>
     <p>Sie haben das Recht auf Auskunft (Art. 15), Berichtigung (Art. 16), Löschung (Art. 17), Einschränkung (Art. 18), Datenübertragbarkeit (Art. 20) und Widerspruch (Art. 21 DSGVO). Lokal gespeicherte Daten können Sie jederzeit selbst löschen (Browser-Daten/„localStorage“ leeren). Beschwerderecht besteht bei der zuständigen Aufsichtsbehörde: Der Hessische Beauftragte für Datenschutz und Informationsfreiheit (HBDI), Postfach 3163, 65021 Wiesbaden.</p>
-    <button class="lg-close" onclick="lgClose('datenschutz')">Schließen</button>
+    <span class="lg-close-slot" data-close="datenschutz"><button class="lg-close" onclick="lgClose('datenschutz')">Schließen</button></span>
   </div>
 </div>
 
